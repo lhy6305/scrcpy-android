@@ -666,6 +666,679 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         scrcpy.sendKeyevent(keyCode);
     }
 
+    private void pullRemoteClipboardToLocal() {
+        if (TextUtils.isEmpty(serverAdr)) {
+            Toast.makeText(this, "Not connected", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        launcherExecutor.submit(() -> {
+            try {
+                ensureAgentDeployed();
+                String out = ApkViewerAgentClient.execAgent(PlayerActivity.this, serverAdr, "clip-get");
+                String text = parseClipGet(out);
+                if (text == null) {
+                    runOnUiThread(() -> Toast.makeText(PlayerActivity.this, "Remote clipboard empty", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+                runOnUiThread(() -> {
+                    setLocalClipboardText(text);
+                    Toast.makeText(PlayerActivity.this, "Clipboard updated", Toast.LENGTH_SHORT).show();
+                });
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(PlayerActivity.this, "Failed to pull clipboard", Toast.LENGTH_SHORT).show());
+            }
+        });
+    }
+
+    private static String parseClipGet(String output) {
+        if (output == null || output.isEmpty()) {
+            return null;
+        }
+        String[] lines = output.split("\n");
+        for (String rawLine : lines) {
+            String line = rawLine != null ? rawLine.trim() : "";
+            if (!line.startsWith("CLIP|")) {
+                continue;
+            }
+            String[] parts = line.split("\\|", 2);
+            if (parts.length != 2) {
+                continue;
+            }
+            String b64 = parts[1];
+            if (b64 == null || b64.isEmpty() || "-".equals(b64)) {
+                return null;
+            }
+            try {
+                byte[] data = Base64.decode(b64, Base64.DEFAULT);
+                return new String(data, StandardCharsets.UTF_8);
+            } catch (Exception ignore) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private void pasteLocalClipboardToRemote() {
+        if (!inputEnabled) {
+            Toast.makeText(this, "Control disabled", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!(serviceBound && scrcpy != null)) {
+            Toast.makeText(this, "Not connected", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        String text = readLocalClipboardText();
+        if (text == null || text.isEmpty()) {
+            Toast.makeText(this, "Local clipboard empty", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        scrcpy.setClipboard(text, true);
+        Toast.makeText(this, "Pasted", Toast.LENGTH_SHORT).show();
+    }
+
+    private void showTextInputDialog() {
+        if (!inputEnabled) {
+            Toast.makeText(this, "Control disabled", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!(serviceBound && scrcpy != null)) {
+            Toast.makeText(this, "Not connected", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        final EditText editText = new EditText(this);
+        editText.setHint("Input text");
+        editText.setSingleLine(false);
+        editText.setMinLines(1);
+        editText.setMaxLines(4);
+        editText.setTextColor(0xFFFFFFFF);
+        editText.setHintTextColor(0x99FFFFFF);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(getString(R.string.menu_soft_keyboard))
+                .setView(editText)
+                .setPositiveButton(android.R.string.ok, (d, which) -> {
+                    String text = editText.getText() != null ? editText.getText().toString() : "";
+                    text = text.trim();
+                    if (!text.isEmpty()) {
+                        scrcpy.injectText(text);
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .create();
+
+        dialog.setOnShowListener(d -> {
+            editText.requestFocus();
+            showKeyboard(editText);
+        });
+        dialog.show();
+    }
+
+    private String readLocalClipboardText() {
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (cm == null || !cm.hasPrimaryClip()) {
+            return null;
+        }
+        ClipData clipData = cm.getPrimaryClip();
+        if (clipData == null || clipData.getItemCount() == 0) {
+            return null;
+        }
+        CharSequence text = clipData.getItemAt(0).coerceToText(this);
+        return text != null ? text.toString() : null;
+    }
+
+    private void setLocalClipboardText(String text) {
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (cm == null) {
+            return;
+        }
+        cm.setPrimaryClip(ClipData.newPlainText("scrcpy-lite", text));
+    }
+
+    private void setupLauncherUi() {
+        if (launcherIconMemCache == null) {
+            final int maxKb = (int) (Runtime.getRuntime().maxMemory() / 1024);
+            final int cacheKb = Math.max(1024, maxKb / 16);
+            launcherIconMemCache = new LruCache<String, android.graphics.Bitmap>(cacheKb) {
+                @Override
+                protected int sizeOf(String key, android.graphics.Bitmap value) {
+                    return value != null ? value.getByteCount() / 1024 : 0;
+                }
+            };
+        }
+
+        if (launcherAdapter == null) {
+            launcherAdapter = new LauncherAdapter();
+        }
+
+        if (launcherGrid != null) {
+            launcherGrid.setAdapter(launcherAdapter);
+            launcherGrid.setOnItemClickListener((parent, view, position, id) -> {
+                if (position < 0 || position >= launcherFilteredApps.size()) {
+                    return;
+                }
+                startRemoteApp(launcherFilteredApps.get(position));
+            });
+            launcherGrid.setOnScrollListener(new android.widget.AbsListView.OnScrollListener() {
+                @Override
+                public void onScrollStateChanged(android.widget.AbsListView view, int scrollState) {
+                    // no-op
+                }
+
+                @Override
+                public void onScroll(android.widget.AbsListView view, int firstVisibleItem, int visibleItemCount, int totalItemCount) {
+                    requestIconsForVisibleItems();
+                }
+            });
+        }
+
+        if (launcherClose != null) {
+            launcherClose.setOnClickListener(v -> hideLauncherOverlay());
+        }
+
+        if (launcherSearch != null) {
+            launcherSearch.addTextChangedListener(new TextWatcher() {
+                @Override
+                public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+                    // no-op
+                }
+
+                @Override
+                public void onTextChanged(CharSequence s, int start, int before, int count) {
+                    applyLauncherFilter(s != null ? s.toString() : "");
+                }
+
+                @Override
+                public void afterTextChanged(Editable s) {
+                    // no-op
+                }
+            });
+        }
+    }
+
+    private void showLauncherOverlay() {
+        if (launcherOverlay == null) {
+            return;
+        }
+        launcherOverlay.setVisibility(View.VISIBLE);
+        if (launcherProgress != null) {
+            launcherProgress.setVisibility(View.VISIBLE);
+        }
+        loadLauncherAppList();
+        if (launcherSearch != null) {
+            launcherSearch.requestFocus();
+            showKeyboard(launcherSearch);
+        }
+    }
+
+    private void hideLauncherOverlay() {
+        if (launcherOverlay != null) {
+            launcherOverlay.setVisibility(View.GONE);
+        }
+        if (launcherSearch != null) {
+            hideKeyboard(launcherSearch);
+        }
+    }
+
+    private void loadLauncherAppList() {
+        if (TextUtils.isEmpty(serverAdr)) {
+            Toast.makeText(this, "Server address missing", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        Future<?> old = launcherListFuture;
+        launcherListFuture = null;
+        if (old != null) {
+            old.cancel(true);
+        }
+
+        launcherListFuture = launcherExecutor.submit(() -> {
+            try {
+                ensureAgentDeployed();
+                String output = ApkViewerAgentClient.execAgent(PlayerActivity.this, serverAdr, "list");
+                List<LauncherApp> apps = parseAppList(output);
+                runOnUiThread(() -> {
+                    if (isFinishing()) {
+                        return;
+                    }
+                    applyNewAppList(apps);
+                    if (launcherProgress != null) {
+                        launcherProgress.setVisibility(View.GONE);
+                    }
+                    requestIconsForVisibleItems();
+                });
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (launcherProgress != null) {
+                        launcherProgress.setVisibility(View.GONE);
+                    }
+                    Toast.makeText(PlayerActivity.this, "Failed to load apps", Toast.LENGTH_SHORT).show();
+                });
+            }
+        });
+    }
+
+    private void applyNewAppList(List<LauncherApp> apps) {
+        launcherAllApps.clear();
+        launcherFilteredApps.clear();
+        launcherAppByPackage.clear();
+        launcherIconRequested.clear();
+
+        if (apps != null) {
+            launcherAllApps.addAll(apps);
+            for (LauncherApp app : apps) {
+                launcherAppByPackage.put(app.packageName, app);
+            }
+        }
+        launcherFilteredApps.addAll(launcherAllApps);
+        if (launcherAdapter != null) {
+            launcherAdapter.notifyDataSetChanged();
+        }
+        if (launcherSearch != null) {
+            launcherSearch.setText("");
+        }
+    }
+
+    private void applyLauncherFilter(String query) {
+        String q = query != null ? query.trim() : "";
+        String qLower = q.toLowerCase(Locale.getDefault());
+
+        launcherFilteredApps.clear();
+        if (qLower.isEmpty()) {
+            launcherFilteredApps.addAll(launcherAllApps);
+        } else {
+            for (LauncherApp app : launcherAllApps) {
+                if (app.labelLower.contains(qLower) || app.packageNameLower.contains(qLower)) {
+                    launcherFilteredApps.add(app);
+                }
+            }
+        }
+        if (launcherAdapter != null) {
+            launcherAdapter.notifyDataSetChanged();
+        }
+        requestIconsForVisibleItems();
+    }
+
+    private void requestIconsForVisibleItems() {
+        if (launcherGrid == null || launcherFilteredApps.isEmpty()) {
+            return;
+        }
+        int first = launcherGrid.getFirstVisiblePosition();
+        int last = launcherGrid.getLastVisiblePosition();
+        if (first < 0 || last < 0) {
+            return;
+        }
+        requestIconsForRange(first, last);
+    }
+
+    private void requestIconsForRange(int first, int last) {
+        int start = Math.max(0, first);
+        int end = Math.min(launcherFilteredApps.size() - 1, last);
+        if (start > end) {
+            return;
+        }
+
+        final int iconSize = 96;
+        List<String> pkgs = new ArrayList<>();
+        for (int i = start; i <= end; i++) {
+            LauncherApp app = launcherFilteredApps.get(i);
+            if (app == null) {
+                continue;
+            }
+            String key = app.iconCacheKey(iconSize);
+            if (launcherIconMemCache != null && launcherIconMemCache.get(key) != null) {
+                continue;
+            }
+            File file = getIconCacheFile(app, iconSize);
+            if (file.exists()) {
+                android.graphics.Bitmap bmp = android.graphics.BitmapFactory.decodeFile(file.getAbsolutePath());
+                if (bmp != null && launcherIconMemCache != null) {
+                    launcherIconMemCache.put(key, bmp);
+                }
+                continue;
+            }
+            if (launcherIconRequested.add(key)) {
+                pkgs.add(app.packageName);
+            }
+        }
+
+        if (!pkgs.isEmpty()) {
+            fetchIconsAsync(pkgs, iconSize);
+        }
+    }
+
+    private void fetchIconsAsync(List<String> packages, int sizePx) {
+        if (TextUtils.isEmpty(serverAdr)) {
+            return;
+        }
+
+        // Run sequentially (single-thread executor) and keep batches small to avoid huge shell output.
+        final List<String> pkgs = packages != null ? new ArrayList<>(packages) : Collections.emptyList();
+        launcherIconFuture = launcherExecutor.submit(() -> {
+            try {
+                ensureAgentDeployed();
+                final int batchSize = 12;
+                for (int i = 0; i < pkgs.size(); i += batchSize) {
+                    checkCancelled();
+                    int j = Math.min(pkgs.size(), i + batchSize);
+                    List<String> batch = pkgs.subList(i, j);
+                    StringBuilder args = new StringBuilder();
+                    args.append("icons --size ").append(sizePx);
+                    for (String pkg : batch) {
+                        args.append(' ').append(pkg);
+                    }
+                    String out = ApkViewerAgentClient.execAgent(PlayerActivity.this, serverAdr, args.toString());
+                    applyIconOutput(out, sizePx);
+                    runOnUiThread(() -> {
+                        if (launcherAdapter != null) {
+                            launcherAdapter.notifyDataSetChanged();
+                        }
+                    });
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception ignore) {
+                // ignore
+            }
+        });
+    }
+
+    private static void checkCancelled() throws InterruptedException {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException("Cancelled");
+        }
+    }
+
+    private void applyIconOutput(String output, int sizePx) {
+        if (output == null || output.isEmpty()) {
+            return;
+        }
+        String[] lines = output.split("\n");
+        for (String rawLine : lines) {
+            String line = rawLine != null ? rawLine.trim() : "";
+            if (!line.startsWith("ICON|")) {
+                continue;
+            }
+            String[] parts = line.split("\\|", 3);
+            if (parts.length != 3) {
+                continue;
+            }
+            String pkg = parts[1];
+            String b64 = parts[2];
+            if (pkg == null || pkg.isEmpty() || "-".equals(b64)) {
+                continue;
+            }
+
+            LauncherApp app = launcherAppByPackage.get(pkg);
+            if (app == null) {
+                continue;
+            }
+
+            try {
+                byte[] png = Base64.decode(b64, Base64.DEFAULT);
+                if (png == null || png.length == 0) {
+                    continue;
+                }
+                File file = getIconCacheFile(app, sizePx);
+                writeFileAtomic(file, png);
+
+                android.graphics.Bitmap bmp = android.graphics.BitmapFactory.decodeByteArray(png, 0, png.length);
+                if (bmp != null && launcherIconMemCache != null) {
+                    launcherIconMemCache.put(app.iconCacheKey(sizePx), bmp);
+                }
+            } catch (Exception ignore) {
+                // ignore
+            }
+        }
+    }
+
+    private void ensureAgentDeployed() throws IOException, InterruptedException {
+        if (agentDeployed) {
+            return;
+        }
+        byte[] base64 = loadAssetBase64(ApkViewerAgentClient.ASSET_NAME);
+        ApkViewerAgentClient.deploy(this, serverAdr, base64, null);
+        agentDeployed = true;
+    }
+
+    private byte[] loadAssetBase64(String assetName) throws IOException {
+        AssetManager assetManager = getAssets();
+        try (InputStream input = assetManager.open(assetName)) {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] tmp = new byte[16 * 1024];
+            int n;
+            while ((n = input.read(tmp)) != -1) {
+                baos.write(tmp, 0, n);
+            }
+            byte[] raw = baos.toByteArray();
+            if (raw.length == 0) {
+                throw new IOException("Failed to read asset: " + assetName);
+            }
+            return Base64.encode(raw, Base64.NO_WRAP);
+        }
+    }
+
+    private static List<LauncherApp> parseAppList(String output) {
+        if (output == null || output.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<LauncherApp> apps = new ArrayList<>();
+        String[] lines = output.split("\n");
+        for (String rawLine : lines) {
+            String line = rawLine != null ? rawLine.trim() : "";
+            if (!line.startsWith("APP|")) {
+                continue;
+            }
+            String[] parts = line.split("\\|", 6);
+            if (parts.length != 6) {
+                continue;
+            }
+            String pkg = parts[1];
+            String component = parts[2];
+            boolean system = "1".equals(parts[3]);
+            long version = 0;
+            try {
+                version = Long.parseLong(parts[4]);
+            } catch (NumberFormatException ignore) {
+                // ignore
+            }
+            String label = "";
+            try {
+                byte[] labelRaw = Base64.decode(parts[5], Base64.DEFAULT);
+                label = new String(labelRaw, StandardCharsets.UTF_8);
+            } catch (Exception ignore) {
+                // ignore
+            }
+            if (pkg == null || pkg.isEmpty() || component == null || component.isEmpty()) {
+                continue;
+            }
+            apps.add(new LauncherApp(pkg, component, label, system, version));
+        }
+        return apps;
+    }
+
+    private void startRemoteApp(LauncherApp app) {
+        if (app == null) {
+            return;
+        }
+        if (!inputEnabled) {
+            Toast.makeText(this, "Control disabled", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (TextUtils.isEmpty(serverAdr)) {
+            Toast.makeText(this, "Not connected", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        hideLauncherOverlay();
+
+        launcherExecutor.submit(() -> {
+            try {
+                // Explicit component start. This matches a launcher icon click best on TV boxes.
+                String cmd = "am start -n " + app.component;
+                ApkViewerAgentClient.exec(PlayerActivity.this, serverAdr, cmd);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(PlayerActivity.this, "Failed to start app", Toast.LENGTH_SHORT).show());
+            }
+        });
+    }
+
+    private File getIconCacheFile(LauncherApp app, int sizePx) {
+        File dir = new File(getCacheDir(), "apkviewer_icons");
+        //noinspection ResultOfMethodCallIgnored
+        dir.mkdirs();
+        String safe = sanitizeFileName(app.packageName);
+        return new File(dir, safe + "_" + app.versionCode + "_" + sizePx + ".png");
+    }
+
+    private static String sanitizeFileName(String value) {
+        if (value == null) {
+            return "null";
+        }
+        StringBuilder out = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if ((c >= 'a' && c <= 'z')
+                    || (c >= 'A' && c <= 'Z')
+                    || (c >= '0' && c <= '9')
+                    || c == '.' || c == '_' || c == '-') {
+                out.append(c);
+            } else {
+                out.append('_');
+            }
+        }
+        return out.toString();
+    }
+
+    private static void writeFileAtomic(File file, byte[] data) throws IOException {
+        if (file == null || data == null) {
+            return;
+        }
+        File dir = file.getParentFile();
+        if (dir != null) {
+            //noinspection ResultOfMethodCallIgnored
+            dir.mkdirs();
+        }
+        File tmp = new File(file.getAbsolutePath() + ".tmp");
+        try (FileOutputStream fos = new FileOutputStream(tmp)) {
+            fos.write(data);
+            fos.flush();
+        }
+        if (!tmp.renameTo(file)) {
+            // Fallback: try to copy over.
+            try (FileOutputStream fos = new FileOutputStream(file)) {
+                fos.write(data);
+                fos.flush();
+            }
+            //noinspection ResultOfMethodCallIgnored
+            tmp.delete();
+        }
+    }
+
+    private void showKeyboard(View view) {
+        if (view == null) {
+            return;
+        }
+        InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
+        }
+    }
+
+    private void hideKeyboard(View view) {
+        if (view == null) {
+            return;
+        }
+        InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            imm.hideSoftInputFromWindow(view.getWindowToken(), 0);
+        }
+    }
+
+    private final class LauncherAdapter extends BaseAdapter {
+        @Override
+        public int getCount() {
+            return launcherFilteredApps.size();
+        }
+
+        @Override
+        public Object getItem(int position) {
+            return position >= 0 && position < launcherFilteredApps.size() ? launcherFilteredApps.get(position) : null;
+        }
+
+        @Override
+        public long getItemId(int position) {
+            return position;
+        }
+
+        @Override
+        public View getView(int position, View convertView, android.view.ViewGroup parent) {
+            View v = convertView;
+            ViewHolder holder;
+            if (v == null) {
+                v = getLayoutInflater().inflate(R.layout.launcher_item, parent, false);
+                holder = new ViewHolder();
+                holder.icon = v.findViewById(R.id.launcher_item_icon);
+                holder.label = v.findViewById(R.id.launcher_item_label);
+                v.setTag(holder);
+            } else {
+                holder = (ViewHolder) v.getTag();
+            }
+
+            LauncherApp app = launcherFilteredApps.get(position);
+            if (holder.label != null) {
+                holder.label.setText(app.label);
+            }
+
+            if (holder.icon != null) {
+                android.graphics.Bitmap bmp = launcherIconMemCache != null ? launcherIconMemCache.get(app.iconCacheKey(96)) : null;
+                if (bmp != null) {
+                    holder.icon.setImageBitmap(bmp);
+                } else {
+                    holder.icon.setImageResource(android.R.drawable.sym_def_app_icon);
+                }
+            }
+            return v;
+        }
+
+        final class ViewHolder {
+            ImageView icon;
+            TextView label;
+        }
+    }
+
+    private static final class LauncherApp {
+        final String packageName;
+        final String packageNameLower;
+        final String component;
+        final String label;
+        final String labelLower;
+        final boolean system;
+        final long versionCode;
+
+        LauncherApp(String packageName, String component, String label, boolean system, long versionCode) {
+            this.packageName = packageName;
+            this.packageNameLower = packageName != null ? packageName.toLowerCase(Locale.getDefault()) : "";
+            this.component = component;
+            this.label = label != null ? label : "";
+            this.labelLower = this.label.toLowerCase(Locale.getDefault());
+            this.system = system;
+            this.versionCode = versionCode;
+        }
+
+        String iconCacheKey(int sizePx) {
+            return packageName + "|" + versionCode + "|" + sizePx;
+        }
+    }
+
     private void updateNavVisibility() {
         if (navButtonBar != null) {
             navButtonBar.setVisibility(navBarVisible && inputEnabled ? View.VISIBLE : View.GONE);
@@ -943,12 +1616,27 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
 
     @Override
     public void onBackPressed() {
+        if (launcherOverlay != null && launcherOverlay.getVisibility() == View.VISIBLE) {
+            hideLauncherOverlay();
+            return;
+        }
         cancelAndFinish();
     }
 
     @Override
     protected void onDestroy() {
         cancelDeployThread();
+        Future<?> lf = launcherListFuture;
+        launcherListFuture = null;
+        if (lf != null) {
+            lf.cancel(true);
+        }
+        Future<?> ifut = launcherIconFuture;
+        launcherIconFuture = null;
+        if (ifut != null) {
+            ifut.cancel(true);
+        }
+        launcherExecutor.shutdownNow();
         stopScrcpyServiceIfRunning();
         if (sensorManager != null) {
             sensorManager.unregisterListener(this);

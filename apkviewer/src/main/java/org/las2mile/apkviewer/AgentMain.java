@@ -4,6 +4,8 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.Intent;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
@@ -38,6 +40,7 @@ public final class AgentMain {
 
     private static final String CMD_LIST = "list";
     private static final String CMD_ICONS = "icons";
+    private static final String CMD_CLIP_GET = "clip-get";
 
     private static final int DEFAULT_ICON_SIZE = 96;
 
@@ -75,6 +78,10 @@ public final class AgentMain {
             handleIcons(context, args);
             return;
         }
+        if (CMD_CLIP_GET.equals(cmd)) {
+            handleClipGet(context);
+            return;
+        }
 
         printUsage();
     }
@@ -84,6 +91,7 @@ public final class AgentMain {
         System.out.println("USAGE|--version");
         System.out.println("USAGE|list");
         System.out.println("USAGE|icons [--size N] <pkg>...");
+        System.out.println("USAGE|clip-get");
     }
 
     private static void handleList(Context context) throws Exception {
@@ -174,6 +182,35 @@ public final class AgentMain {
             }
         }
         System.out.println("END|ICONS");
+    }
+
+    private static void handleClipGet(Context context) {
+        try {
+            ClipboardManager cm = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm == null || !cm.hasPrimaryClip()) {
+                System.out.println("CLIP|-");
+                System.out.println("END|CLIP");
+                return;
+            }
+            ClipData clipData = cm.getPrimaryClip();
+            if (clipData == null || clipData.getItemCount() == 0) {
+                System.out.println("CLIP|-");
+                System.out.println("END|CLIP");
+                return;
+            }
+            CharSequence text = clipData.getItemAt(0).coerceToText(context);
+            if (text == null) {
+                System.out.println("CLIP|-");
+                System.out.println("END|CLIP");
+                return;
+            }
+            String b64 = b64Utf8(text.toString());
+            System.out.println("CLIP|" + b64);
+            System.out.println("END|CLIP");
+        } catch (Throwable t) {
+            System.out.println("CLIP|-");
+            System.out.println("END|CLIP");
+        }
     }
 
     private static String loadIconBase64Png(PackageManager pm, String pkg, int size) throws Exception {
@@ -302,4 +339,3 @@ public final class AgentMain {
         };
     }
 }
-

@@ -57,6 +57,7 @@ public class Scrcpy extends Service {
     private static final String SOCKET_NAME_PREFIX = "scrcpy";
 
     private static final int CONTROL_MSG_TYPE_INJECT_KEYCODE = 0;
+    private static final int CONTROL_MSG_TYPE_INJECT_TEXT = 1;
     private static final int CONTROL_MSG_TYPE_INJECT_TOUCH_EVENT = 2;
     private static final int CONTROL_MSG_TYPE_SET_CLIPBOARD = 9;
 
@@ -106,6 +107,7 @@ public class Scrcpy extends Service {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicReference<String> lastRemoteClipboardText = new AtomicReference<>();
     private final AtomicLong clipboardSequence = new AtomicLong(1);
+    private volatile boolean clipboardSyncEnabled = true;
     private volatile int streamWidth;
     private volatile int streamHeight;
     private Thread connectionThread;
@@ -136,7 +138,11 @@ public class Scrcpy extends Service {
 
     public void start(Surface surface, String serverAdr, int screenHeight, int screenWidth, int scid) {
         letServiceRunning.set(true);
-        registerClipboardSync();
+        if (clipboardSyncEnabled) {
+            registerClipboardSync();
+        } else {
+            unregisterClipboardSync();
+        }
         this.videoDecoder = null;
         this.serverAdr = serverAdr;
         this.scid = scid;
@@ -203,6 +209,38 @@ public class Scrcpy extends Service {
     public void sendKeyevent(int keycode) {
         enqueueControlMessage(buildKeyControlMessage(KeyEvent.ACTION_DOWN, keycode));
         enqueueControlMessage(buildKeyControlMessage(KeyEvent.ACTION_UP, keycode));
+    }
+
+    public void injectText(String text) {
+        if (text == null) {
+            return;
+        }
+        // Server limit is small; clip by UTF-8 bytes to avoid protocol errors.
+        byte[] raw = getClippedUtf8(text, 300);
+        if (raw.length == 0) {
+            return;
+        }
+        byte[] msg = new byte[1 + 4 + raw.length];
+        msg[0] = CONTROL_MSG_TYPE_INJECT_TEXT;
+        writeIntBE(msg, 1, raw.length);
+        System.arraycopy(raw, 0, msg, 5, raw.length);
+        enqueueControlMessage(msg);
+    }
+
+    public void setClipboard(String text, boolean paste) {
+        if (text == null) {
+            return;
+        }
+        enqueueControlMessage(buildSetClipboardControlMessage(clipboardSequence.getAndIncrement(), text, paste));
+    }
+
+    public void setClipboardSyncEnabled(boolean enabled) {
+        clipboardSyncEnabled = enabled;
+        if (enabled) {
+            registerClipboardSync();
+        } else {
+            unregisterClipboardSync();
+        }
     }
 
     private void enqueueControlMessage(byte[] msg) {
@@ -971,12 +1009,17 @@ public class Scrcpy extends Service {
     }
 
     private void applyRemoteClipboard(String text) {
+        lastRemoteClipboardText.set(text);
+        if (!clipboardSyncEnabled) {
+            return;
+        }
         if (clipboardManager == null) {
             return;
         }
-
-        lastRemoteClipboardText.set(text);
         mainHandler.post(() -> {
+            if (!clipboardSyncEnabled) {
+                return;
+            }
             if (clipboardManager == null) {
                 return;
             }
