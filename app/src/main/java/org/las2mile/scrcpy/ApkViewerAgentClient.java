@@ -117,7 +117,7 @@ public final class ApkViewerAgentClient {
 
         AdbStream shell = null;
         try {
-            shell = adb.open("shell:");
+            shell = openAdbStreamSerialized(adb, "shell:");
 
             report(listener, "Opening shell...");
             shell.write(" \n");
@@ -211,7 +211,7 @@ public final class ApkViewerAgentClient {
 
         AdbStream stream = null;
         try {
-            stream = adb.open("shell:" + command);
+            stream = openAdbStreamSerialized(adb, "shell:" + command);
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             while (!Thread.currentThread().isInterrupted()) {
                 byte[] chunk = stream.read();
@@ -255,6 +255,13 @@ public final class ApkViewerAgentClient {
     private static void checkCancelled() throws InterruptedException {
         if (Thread.currentThread().isInterrupted()) {
             throw new InterruptedException("Cancelled");
+        }
+    }
+
+    private static AdbStream openAdbStreamSerialized(AdbConnection adb, String destination)
+            throws IOException, InterruptedException {
+        synchronized (adb) {
+            return adb.open(destination);
         }
     }
 

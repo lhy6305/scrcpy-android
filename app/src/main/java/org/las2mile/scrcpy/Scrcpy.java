@@ -279,17 +279,17 @@ public class Scrcpy extends Service {
                 adbConnectionForTools = adbConnection;
                 String socketService = "localabstract:" + getSocketName(scid);
 
-                videoStream = adbConnection.open(socketService);
+                videoStream = openAdbStreamSerialized(adbConnection, socketService);
                 videoInputStream = new DataInputStream(new AdbStreamInputStream(videoStream));
                 int dummyByte = videoInputStream.read();
                 if (dummyByte == -1) {
                     throw new EOFException("Could not read dummy byte from video stream");
                 }
 
-                audioStream = adbConnection.open(socketService);
+                audioStream = openAdbStreamSerialized(adbConnection, socketService);
                 audioInputStream = new DataInputStream(new AdbStreamInputStream(audioStream));
 
-                controlStream = adbConnection.open(socketService);
+                controlStream = openAdbStreamSerialized(adbConnection, socketService);
                 controlInputStream = new DataInputStream(new AdbStreamInputStream(controlStream));
                 controlOutputStream = new DataOutputStream(new AdbStreamOutputStream(controlStream));
 
@@ -442,6 +442,13 @@ public class Scrcpy extends Service {
         }
     }
 
+    private static AdbStream openAdbStreamSerialized(AdbConnection adbConnection, String destination)
+            throws IOException, InterruptedException {
+        synchronized (adbConnection) {
+            return adbConnection.open(destination);
+        }
+    }
+
     private AdbCrypto setupCrypto() throws IOException {
         AdbCrypto crypto;
         try {
@@ -591,6 +598,9 @@ public class Scrcpy extends Service {
                 Log.i("scrcpy", "Audio stream closed");
             } catch (IOException e) {
                 Log.w("scrcpy", "Audio receiver stopped: " + e.getMessage());
+            } finally {
+                // Release one adb stream slot early (especially useful when remote audio is disabled).
+                closeQuietly(audioInputStream);
             }
         }, "scrcpy-audio-recv");
         thread.start();

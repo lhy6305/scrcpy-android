@@ -88,6 +88,8 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
     private static final String PREF_FLOAT_BALL_X = "float_ball_x_ratio";
     private static final String PREF_FLOAT_BALL_Y = "float_ball_y_ratio";
     private static final String APKVIEWER_AGENT_VERSION = "1";
+    private static final int SHARED_ADB_OPEN_RETRY_COUNT = 3;
+    private static final long SHARED_ADB_OPEN_RETRY_DELAY_MS = 160L;
 
     private static final SecureRandom SCID_RANDOM = new SecureRandom();
 
@@ -988,7 +990,8 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
                     if (launcherProgress != null) {
                         launcherProgress.setVisibility(View.GONE);
                     }
-                    Toast.makeText(PlayerActivity.this, R.string.toast_failed_load_apps, Toast.LENGTH_SHORT).show();
+                    String msg = getString(R.string.toast_failed_load_apps) + ": " + briefError(e);
+                    Toast.makeText(PlayerActivity.this, msg, Toast.LENGTH_LONG).show();
                 });
             }
         });
@@ -1208,28 +1211,112 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
 
     private String execAgentWithFallback(String args) throws IOException, InterruptedException {
         AdbConnection adb = getAdbForTools();
+        IOException sharedError = null;
         if (adb != null) {
             try {
-                return ApkViewerAgentClient.execAgent(adb, args);
-            } catch (IOException ignore) {
-                Log.w("scrcpy", "execAgent via shared ADB failed, fallback to new session: " + ignore.getMessage());
+                return execAgentWithSharedRetry(adb, args);
+            } catch (IOException e) {
+                sharedError = e;
+                Log.w("scrcpy", "execAgent via shared ADB failed, fallback to new session: " + e.getMessage());
                 // Fall back to a new ADB session for robustness.
             }
         }
-        return ApkViewerAgentClient.execAgent(this, serverAdr, args);
+        try {
+            return ApkViewerAgentClient.execAgent(this, serverAdr, args);
+        } catch (IOException e) {
+            if (sharedError != null) {
+                throw new IOException(
+                        "shared adb failed: " + briefError(sharedError) + "; fallback adb failed: " + briefError(e), e);
+            }
+            throw e;
+        }
     }
 
     private String execShellWithFallback(String command) throws IOException, InterruptedException {
         AdbConnection adb = getAdbForTools();
+        IOException sharedError = null;
         if (adb != null) {
             try {
-                return ApkViewerAgentClient.exec(adb, command);
-            } catch (IOException ignore) {
-                Log.w("scrcpy", "exec shell via shared ADB failed, fallback to new session: " + ignore.getMessage());
+                return execShellWithSharedRetry(adb, command);
+            } catch (IOException e) {
+                sharedError = e;
+                Log.w("scrcpy", "exec shell via shared ADB failed, fallback to new session: " + e.getMessage());
                 // Fall back to a new ADB session for robustness.
             }
         }
-        return ApkViewerAgentClient.exec(this, serverAdr, command);
+        try {
+            return ApkViewerAgentClient.exec(this, serverAdr, command);
+        } catch (IOException e) {
+            if (sharedError != null) {
+                throw new IOException(
+                        "shared adb failed: " + briefError(sharedError) + "; fallback adb failed: " + briefError(e), e);
+            }
+            throw e;
+        }
+    }
+
+    private String execAgentWithSharedRetry(AdbConnection adb, String args) throws IOException, InterruptedException {
+        IOException last = null;
+        for (int attempt = 1; attempt <= SHARED_ADB_OPEN_RETRY_COUNT; attempt++) {
+            try {
+                return ApkViewerAgentClient.execAgent(adb, args);
+            } catch (IOException e) {
+                last = e;
+                if (!isSharedOpenRetryable(e) || attempt >= SHARED_ADB_OPEN_RETRY_COUNT) {
+                    throw e;
+                }
+                Log.w("scrcpy", "shared ADB agent open rejected, retry " + attempt + "/" + SHARED_ADB_OPEN_RETRY_COUNT);
+                Thread.sleep(SHARED_ADB_OPEN_RETRY_DELAY_MS);
+            }
+        }
+        throw last != null ? last : new IOException("shared adb agent exec failed");
+    }
+
+    private String execShellWithSharedRetry(AdbConnection adb, String command) throws IOException, InterruptedException {
+        IOException last = null;
+        for (int attempt = 1; attempt <= SHARED_ADB_OPEN_RETRY_COUNT; attempt++) {
+            try {
+                return ApkViewerAgentClient.exec(adb, command);
+            } catch (IOException e) {
+                last = e;
+                if (!isSharedOpenRetryable(e) || attempt >= SHARED_ADB_OPEN_RETRY_COUNT) {
+                    throw e;
+                }
+                Log.w("scrcpy", "shared ADB shell open rejected, retry " + attempt + "/" + SHARED_ADB_OPEN_RETRY_COUNT);
+                Thread.sleep(SHARED_ADB_OPEN_RETRY_DELAY_MS);
+            }
+        }
+        throw last != null ? last : new IOException("shared adb shell exec failed");
+    }
+
+    private static boolean isSharedOpenRetryable(IOException e) {
+        if (e == null) {
+            return false;
+        }
+        String msg = e.getMessage();
+        if (msg == null || msg.isEmpty()) {
+            return false;
+        }
+        String lower = msg.toLowerCase(Locale.ROOT);
+        return lower.contains("stream open actively rejected")
+                || lower.contains("stream closed")
+                || lower.contains("stream open rejected");
+    }
+
+    private static String briefError(Throwable e) {
+        if (e == null) {
+            return "unknown";
+        }
+        String name = e.getClass().getSimpleName();
+        String msg = e.getMessage();
+        if (msg == null || msg.trim().isEmpty()) {
+            return name;
+        }
+        String normalized = msg.replace('\n', ' ').replace('\r', ' ').trim();
+        if (normalized.length() > 120) {
+            normalized = normalized.substring(0, 120) + "...";
+        }
+        return name + ": " + normalized;
     }
 
     private static boolean isAgentVersionOk(String output) {
