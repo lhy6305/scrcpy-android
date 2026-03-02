@@ -106,6 +106,75 @@ public final class ApkViewerAgentClient {
         }
     }
 
+    public static void deploy(AdbConnection adb, byte[] agentJarBase64, ProgressListener listener)
+            throws IOException, InterruptedException {
+        if (adb == null) {
+            throw new IOException("adb is null");
+        }
+        if (agentJarBase64 == null || agentJarBase64.length == 0) {
+            throw new IOException("agentJarBase64 is empty");
+        }
+
+        AdbStream shell = null;
+        try {
+            shell = adb.open("shell:");
+
+            report(listener, "Opening shell...");
+            shell.write(" \n");
+            if (!waitForPrompt(shell, PROMPT_TIMEOUT_MS)) {
+                throw new SocketTimeoutException("Timed out waiting for shell prompt");
+            }
+
+            report(listener, "Pushing agent...");
+            shell.write(" cd /data/local/tmp\n");
+            if (!waitForPrompt(shell, PROMPT_TIMEOUT_MS)) {
+                throw new SocketTimeoutException("Timed out waiting for shell prompt");
+            }
+
+            shell.write(" rm -f apkviewerAgentBase64\n");
+            if (!waitForPrompt(shell, PROMPT_TIMEOUT_MS)) {
+                throw new SocketTimeoutException("Timed out waiting for shell prompt");
+            }
+
+            int len = agentJarBase64.length;
+            byte[] filePart = new byte[4056];
+            int sourceOffset = 0;
+            while (sourceOffset < len) {
+                checkCancelled();
+                if (len - sourceOffset >= filePart.length) {
+                    System.arraycopy(agentJarBase64, sourceOffset, filePart, 0, filePart.length);
+                    sourceOffset += filePart.length;
+                    String part = new String(filePart, StandardCharsets.US_ASCII);
+                    shell.write(" echo " + part + " >> apkviewerAgentBase64\n");
+                } else {
+                    int rem = len - sourceOffset;
+                    byte[] remPart = new byte[rem];
+                    System.arraycopy(agentJarBase64, sourceOffset, remPart, 0, rem);
+                    sourceOffset += rem;
+                    String part = new String(remPart, StandardCharsets.US_ASCII);
+                    shell.write(" echo " + part + " >> apkviewerAgentBase64\n");
+                }
+
+                if (!waitForPrompt(shell, PROMPT_TIMEOUT_MS)) {
+                    throw new SocketTimeoutException("Timed out waiting for shell prompt");
+                }
+            }
+
+            shell.write(" base64 -d < apkviewerAgentBase64 > apkviewer-agent.jar && rm apkviewerAgentBase64\n");
+            if (!waitForPrompt(shell, PROMPT_TIMEOUT_MS)) {
+                throw new SocketTimeoutException("Timed out waiting for shell prompt");
+            }
+        } finally {
+            if (shell != null) {
+                try {
+                    shell.close();
+                } catch (IOException ignore) {
+                    // ignore
+                }
+            }
+        }
+    }
+
     public static String exec(Context context, String ip, String command) throws IOException, InterruptedException {
         if (command == null) {
             throw new IOException("command is null");
@@ -132,9 +201,49 @@ public final class ApkViewerAgentClient {
         }
     }
 
+    public static String exec(AdbConnection adb, String command) throws IOException, InterruptedException {
+        if (adb == null) {
+            throw new IOException("adb is null");
+        }
+        if (command == null) {
+            throw new IOException("command is null");
+        }
+
+        AdbStream stream = null;
+        try {
+            stream = adb.open("shell:" + command);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            while (!Thread.currentThread().isInterrupted()) {
+                byte[] chunk = stream.read();
+                if (chunk == null) {
+                    break;
+                }
+                if (chunk.length == 0) {
+                    continue;
+                }
+                out.write(chunk, 0, chunk.length);
+            }
+            checkCancelled();
+            return new String(out.toByteArray(), StandardCharsets.UTF_8);
+        } finally {
+            if (stream != null) {
+                try {
+                    stream.close();
+                } catch (IOException ignore) {
+                    // ignore
+                }
+            }
+        }
+    }
+
     public static String execAgent(Context context, String ip, String args) throws IOException, InterruptedException {
         String cmd = "CLASSPATH=" + REMOTE_JAR_PATH + " app_process / org.las2mile.apkviewer.AgentMain " + args;
         return exec(context, ip, cmd);
+    }
+
+    public static String execAgent(AdbConnection adb, String args) throws IOException, InterruptedException {
+        String cmd = "CLASSPATH=" + REMOTE_JAR_PATH + " app_process / org.las2mile.apkviewer.AgentMain " + args;
+        return exec(adb, cmd);
     }
 
     private static void report(ProgressListener listener, String message) {

@@ -111,6 +111,9 @@ public class Scrcpy extends Service {
     private volatile int streamWidth;
     private volatile int streamHeight;
     private Thread connectionThread;
+    // For in-app tools (launcher/clipboard agent) that need ADB while streaming.
+    // Some devices only allow a single ADB TCP connection: reuse this one.
+    private volatile AdbConnection adbConnectionForTools;
     private ClipboardManager clipboardManager;
     private ClipboardManager.OnPrimaryClipChangedListener clipboardListener;
     private final AtomicBoolean clipboardListenerRegistered = new AtomicBoolean(false);
@@ -171,12 +174,19 @@ public class Scrcpy extends Service {
     public void StopService() {
         letServiceRunning.set(false);
         unregisterClipboardSync();
+        // Force-close to unblock reads quickly and free the TCP slot for reconnect.
+        closeQuietly(adbConnectionForTools);
+        adbConnectionForTools = null;
         if (connectionThread != null) {
             connectionThread.interrupt();
         }
         notifyConnectionStateChanged(false);
         stopVideoDecoder();
         stopSelf();
+    }
+
+    AdbConnection getAdbConnectionForTools() {
+        return adbConnectionForTools;
     }
 
     public boolean touchevent(MotionEvent touchEvent, int displayW, int displayH) {
@@ -266,6 +276,7 @@ public class Scrcpy extends Service {
             Thread audioReceiver = null;
             try {
                 adbConnection = openAdbConnection(serverAdr);
+                adbConnectionForTools = adbConnection;
                 String socketService = "localabstract:" + getSocketName(scid);
 
                 videoStream = adbConnection.open(socketService);
@@ -391,6 +402,9 @@ public class Scrcpy extends Service {
                 notifyConnectionStateChanged(false);
                 break;
             } finally {
+                if (adbConnectionForTools == adbConnection) {
+                    adbConnectionForTools = null;
+                }
                 stopThread(controlSender);
                 stopThread(controlReceiver);
                 stopThread(audioReceiver);

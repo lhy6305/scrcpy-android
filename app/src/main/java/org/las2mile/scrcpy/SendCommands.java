@@ -149,24 +149,51 @@ public class SendCommands {
         }
 
         final String command = buildServerStartCommand(bitrate, maxSize, width, height, useAmlogicMode, scid);
+
+        // Some devices are very sensitive to reconnect timing (especially when ADB over TCP is single-connection).
+        // Retry a few times to let the previous connection fully close.
+        final int maxAttempts = 6;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                adbStartOnly(context, ip, command, listener);
+                return Result.ok();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return Result.fail(Error.CANCELLED, "Cancelled");
+            } catch (UnknownHostException e) {
+                return Result.fail(Error.INVALID_HOST, e.getMessage());
+            } catch (NoRouteToHostException e) {
+                return Result.fail(Error.NO_ROUTE, e.getMessage());
+            } catch (ConnectException e) {
+                if (attempt == maxAttempts) {
+                    return Result.fail(Error.CONNECTION_REFUSED, e.getMessage());
+                }
+                sleepBackoff(attempt);
+            } catch (SocketTimeoutException e) {
+                if (attempt == maxAttempts) {
+                    return Result.fail(Error.TIMEOUT, e.getMessage());
+                }
+                sleepBackoff(attempt);
+            } catch (IOException e) {
+                if (attempt == maxAttempts) {
+                    return Result.fail(Error.IO, e.getMessage());
+                }
+                sleepBackoff(attempt);
+            } catch (RuntimeException e) {
+                if (attempt == maxAttempts) {
+                    return Result.fail(Error.UNKNOWN, e.getMessage());
+                }
+                sleepBackoff(attempt);
+            }
+        }
+        return Result.fail(Error.UNKNOWN, "Unknown");
+    }
+
+    private static void sleepBackoff(int attempt) {
         try {
-            adbStartOnly(context, ip, command, listener);
-            return Result.ok();
-        } catch (InterruptedException e) {
+            Thread.sleep(150L * attempt);
+        } catch (InterruptedException ignore) {
             Thread.currentThread().interrupt();
-            return Result.fail(Error.CANCELLED, "Cancelled");
-        } catch (UnknownHostException e) {
-            return Result.fail(Error.INVALID_HOST, e.getMessage());
-        } catch (ConnectException e) {
-            return Result.fail(Error.CONNECTION_REFUSED, e.getMessage());
-        } catch (NoRouteToHostException e) {
-            return Result.fail(Error.NO_ROUTE, e.getMessage());
-        } catch (SocketTimeoutException e) {
-            return Result.fail(Error.TIMEOUT, e.getMessage());
-        } catch (IOException e) {
-            return Result.fail(Error.IO, e.getMessage());
-        } catch (RuntimeException e) {
-            return Result.fail(Error.UNKNOWN, e.getMessage());
         }
     }
 

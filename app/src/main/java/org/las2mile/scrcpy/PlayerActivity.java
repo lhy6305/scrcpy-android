@@ -50,6 +50,8 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.tananaev.adblib.AdbConnection;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -740,7 +742,10 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         launcherExecutor.submit(() -> {
             try {
                 ensureAgentDeployed();
-                String out = ApkViewerAgentClient.execAgent(PlayerActivity.this, serverAdr, "clip-get");
+                AdbConnection adb = getAdbForTools();
+                String out = adb != null
+                        ? ApkViewerAgentClient.execAgent(adb, "clip-get")
+                        : ApkViewerAgentClient.execAgent(PlayerActivity.this, serverAdr, "clip-get");
                 String text = parseClipGet(out);
                 if (text == null) {
                     runOnUiThread(() -> Toast.makeText(PlayerActivity.this, R.string.toast_remote_clipboard_empty, Toast.LENGTH_SHORT).show());
@@ -964,7 +969,10 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         launcherListFuture = launcherExecutor.submit(() -> {
             try {
                 ensureAgentDeployed();
-                String output = ApkViewerAgentClient.execAgent(PlayerActivity.this, serverAdr, "list");
+                AdbConnection adb = getAdbForTools();
+                String output = adb != null
+                        ? ApkViewerAgentClient.execAgent(adb, "list")
+                        : ApkViewerAgentClient.execAgent(PlayerActivity.this, serverAdr, "list");
                 List<LauncherApp> apps = parseAppList(output);
                 runOnUiThread(() -> {
                     if (isFinishing()) {
@@ -1098,7 +1106,10 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
                     for (String pkg : batch) {
                         args.append(' ').append(pkg);
                     }
-                    String out = ApkViewerAgentClient.execAgent(PlayerActivity.this, serverAdr, args.toString());
+                    AdbConnection adb = getAdbForTools();
+                    String out = adb != null
+                            ? ApkViewerAgentClient.execAgent(adb, args.toString())
+                            : ApkViewerAgentClient.execAgent(PlayerActivity.this, serverAdr, args.toString());
                     applyIconOutput(out, sizePx);
                     runOnUiThread(() -> {
                         if (launcherAdapter != null) {
@@ -1168,14 +1179,28 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             return;
         }
         byte[] base64 = loadAssetBase64(ApkViewerAgentClient.ASSET_NAME);
-        ApkViewerAgentClient.deploy(this, serverAdr, base64, null);
+        AdbConnection adb = getAdbForTools();
+        if (adb != null) {
+            ApkViewerAgentClient.deploy(adb, base64, null);
+        } else {
+            ApkViewerAgentClient.deploy(this, serverAdr, base64, null);
+        }
 
         // Ensure the remote jar is valid and runnable (e.g. base64 command might be missing on some ROMs).
-        String out = ApkViewerAgentClient.execAgent(this, serverAdr, "--version");
+        String out = adb != null
+                ? ApkViewerAgentClient.execAgent(adb, "--version")
+                : ApkViewerAgentClient.execAgent(this, serverAdr, "--version");
         if (!isAgentVersionOk(out)) {
             throw new IOException("apkviewer-agent verify failed");
         }
         agentDeployed = true;
+    }
+
+    private AdbConnection getAdbForTools() {
+        if (!(serviceBound && scrcpy != null && scrcpy.check_socket_connection())) {
+            return null;
+        }
+        return scrcpy.getAdbConnectionForTools();
     }
 
     private static boolean isAgentVersionOk(String output) {
@@ -1269,20 +1294,27 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             try {
                 // Explicit component start. This matches a launcher icon click best on TV boxes.
                 String cmd = "am start -n " + app.component;
-                String out = ApkViewerAgentClient.exec(PlayerActivity.this, serverAdr, cmd);
+                AdbConnection adb = getAdbForTools();
+                String out = adb != null
+                        ? ApkViewerAgentClient.exec(adb, cmd)
+                        : ApkViewerAgentClient.exec(PlayerActivity.this, serverAdr, cmd);
                 if (isAmStartSuccess(out)) {
                     return;
                 }
 
                 // Fallback: some apps might not start via explicit component (or component changed).
-                String outLeanback = ApkViewerAgentClient.exec(PlayerActivity.this, serverAdr,
-                        "monkey -p " + app.packageName + " -c android.intent.category.LEANBACK_LAUNCHER 1");
+                String outLeanback = adb != null
+                        ? ApkViewerAgentClient.exec(adb, "monkey -p " + app.packageName + " -c android.intent.category.LEANBACK_LAUNCHER 1")
+                        : ApkViewerAgentClient.exec(PlayerActivity.this, serverAdr,
+                                "monkey -p " + app.packageName + " -c android.intent.category.LEANBACK_LAUNCHER 1");
                 if (isMonkeySuccess(outLeanback)) {
                     return;
                 }
 
-                String outLauncher = ApkViewerAgentClient.exec(PlayerActivity.this, serverAdr,
-                        "monkey -p " + app.packageName + " -c android.intent.category.LAUNCHER 1");
+                String outLauncher = adb != null
+                        ? ApkViewerAgentClient.exec(adb, "monkey -p " + app.packageName + " -c android.intent.category.LAUNCHER 1")
+                        : ApkViewerAgentClient.exec(PlayerActivity.this, serverAdr,
+                                "monkey -p " + app.packageName + " -c android.intent.category.LAUNCHER 1");
                 if (isMonkeySuccess(outLauncher)) {
                     return;
                 }
