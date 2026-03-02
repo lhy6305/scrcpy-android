@@ -334,8 +334,10 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         if (connectionOverlay != null) {
             connectionOverlay.setVisibility(View.VISIBLE);
         }
+        // Keep the floating ball always visible so users can access reconnect/disconnect even while connecting.
         if (floatingBall != null) {
-            floatingBall.setVisibility(View.GONE);
+            floatingBall.setVisibility(View.VISIBLE);
+            clampFloatingBallToBounds();
         }
         if (launcherOverlay != null) {
             launcherOverlay.setVisibility(View.GONE);
@@ -366,7 +368,8 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             connectionOverlay.setVisibility(View.GONE);
         }
         if (floatingBall != null) {
-            floatingBall.setVisibility(streamingStarted ? View.VISIBLE : View.GONE);
+            floatingBall.setVisibility(View.VISIBLE);
+            clampFloatingBallToBounds();
         }
     }
 
@@ -401,7 +404,16 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             return;
         }
 
-        floatingBall.post(this::restoreFloatingBallPosition);
+        floatingBall.post(() -> {
+            restoreFloatingBallPosition();
+            clampFloatingBallToBounds();
+        });
+
+        View parentView = (View) floatingBall.getParent();
+        if (parentView != null) {
+            parentView.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
+                    clampFloatingBallToBounds());
+        }
 
         final int touchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
         floatingBall.setOnTouchListener(new View.OnTouchListener() {
@@ -471,22 +483,51 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         if (parent == null) {
             return;
         }
-        int parentW = parent.getWidth() - floatingBall.getWidth();
-        int parentH = parent.getHeight() - floatingBall.getHeight();
-        if (parentW <= 0 || parentH <= 0) {
+        int parentW = parent.getWidth();
+        int parentH = parent.getHeight();
+        int ballW = floatingBall.getWidth();
+        int ballH = floatingBall.getHeight();
+        if (parentW <= 0 || parentH <= 0 || ballW <= 0 || ballH <= 0) {
+            // Layout not ready yet. Retry after the next layout pass.
+            floatingBall.post(this::restoreFloatingBallPosition);
             return;
         }
+        int maxX = Math.max(0, parentW - ballW);
+        int maxY = Math.max(0, parentH - ballH);
 
         float xRatio = getSharedPreferences(PREF_KEY, 0).getFloat(PREF_FLOAT_BALL_X, Float.NaN);
         float yRatio = getSharedPreferences(PREF_KEY, 0).getFloat(PREF_FLOAT_BALL_Y, Float.NaN);
         if (Float.isNaN(xRatio) || Float.isNaN(yRatio)) {
+            clampFloatingBallToBounds();
             return;
         }
 
-        float x = clampFloat(xRatio, 0, 1) * parentW;
-        float y = clampFloat(yRatio, 0, 1) * parentH;
-        floatingBall.setX(clampFloat(x, 0, parentW));
-        floatingBall.setY(clampFloat(y, 0, parentH));
+        float x = clampFloat(xRatio, 0, 1) * maxX;
+        float y = clampFloat(yRatio, 0, 1) * maxY;
+        floatingBall.setX(clampFloat(x, 0, maxX));
+        floatingBall.setY(clampFloat(y, 0, maxY));
+    }
+
+    private void clampFloatingBallToBounds() {
+        if (floatingBall == null) {
+            return;
+        }
+        View parent = (View) floatingBall.getParent();
+        if (parent == null) {
+            return;
+        }
+        int parentW = parent.getWidth();
+        int parentH = parent.getHeight();
+        int ballW = floatingBall.getWidth();
+        int ballH = floatingBall.getHeight();
+        if (parentW <= 0 || parentH <= 0 || ballW <= 0 || ballH <= 0) {
+            floatingBall.post(this::clampFloatingBallToBounds);
+            return;
+        }
+        float maxX = Math.max(0, parentW - ballW);
+        float maxY = Math.max(0, parentH - ballH);
+        floatingBall.setX(clampFloat(floatingBall.getX(), 0, maxX));
+        floatingBall.setY(clampFloat(floatingBall.getY(), 0, maxY));
     }
 
     private void saveFloatingBallPosition() {
@@ -497,11 +538,11 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         if (parent == null) {
             return;
         }
-        float maxX = Math.max(1, parent.getWidth() - floatingBall.getWidth());
-        float maxY = Math.max(1, parent.getHeight() - floatingBall.getHeight());
+        float maxX = Math.max(0, parent.getWidth() - floatingBall.getWidth());
+        float maxY = Math.max(0, parent.getHeight() - floatingBall.getHeight());
 
-        float xRatio = clampFloat(floatingBall.getX() / maxX, 0, 1);
-        float yRatio = clampFloat(floatingBall.getY() / maxY, 0, 1);
+        float xRatio = maxX > 0 ? clampFloat(floatingBall.getX() / maxX, 0, 1) : 0f;
+        float yRatio = maxY > 0 ? clampFloat(floatingBall.getY() / maxY, 0, 1) : 0f;
         getSharedPreferences(PREF_KEY, 0).edit()
                 .putFloat(PREF_FLOAT_BALL_X, xRatio)
                 .putFloat(PREF_FLOAT_BALL_Y, yRatio)

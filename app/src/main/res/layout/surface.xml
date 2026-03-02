@@ -132,7 +132,7 @@
         android:padding="8dp"
         android:src="@android:drawable/ic_menu_more"
         android:tint="@android:color/white"
-        android:visibility="gone"
+        android:visibility="visible"
         tools:visibility="visible" />
 
     <FrameLayout
