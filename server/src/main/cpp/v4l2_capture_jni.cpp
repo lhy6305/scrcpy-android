@@ -55,6 +55,8 @@ typedef struct {
     uint32_t *refcounts;
     uint32_t buffer_count;
     bool streaming;
+    bool microdimming_enabled;
+    bool microdimming_warned;
 } CaptureContext;
 
 static pthread_mutex_t g_instance_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -74,6 +76,11 @@ static int xioctl(int fd, unsigned long request, void *arg) {
         ret = ioctl(fd, request, arg);
     } while (ret == -1 && errno == EINTR);
     return ret;
+}
+
+static void notify_state_callback(int state) {
+    // Mirror HAL callback values in logs: start=0, pause=1, stop=3.
+    LOGI("state_callback(%d)", state);
 }
 
 static void throw_io_exception(JNIEnv *env, const char *prefix) {
@@ -100,6 +107,7 @@ static void close_context(CaptureContext *ctx) {
             LOGW("VIDIOC_STREAMOFF failed: %s", strerror(errno));
         }
         ctx->streaming = false;
+        notify_state_callback(3);
     }
 
     if (ctx->buffers) {
@@ -300,6 +308,71 @@ static bool is_supported_pixel_format(uint32_t pixel_format) {
     }
 }
 
+static bool is_yuv420_family(uint32_t pixel_format) {
+    switch (pixel_format) {
+        case V4L2_PIX_FMT_NV12:
+        case V4L2_PIX_FMT_NV21:
+        case V4L2_PIX_FMT_YVU420:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void apply_microdimming_yuv420(const uint8_t *src, uint8_t *dst, uint32_t width, uint32_t height, uint32_t bytes_per_line,
+                                      uint32_t frame_size) {
+    if (!src || !dst || width == 0 || height == 0) {
+        return;
+    }
+
+    uint32_t stride = bytes_per_line > 0 ? bytes_per_line : width;
+    if (stride < width) {
+        stride = width;
+    }
+
+    uint32_t y_plane_size = stride * height;
+    uint32_t uv_plane_size = stride * (height / 2);
+    uint32_t min_size = y_plane_size + uv_plane_size;
+    if (frame_size < min_size) {
+        return;
+    }
+
+    memset(dst, 0, y_plane_size);
+
+    const uint32_t block_w = 8;
+    const uint32_t block_h = 8;
+    for (uint32_t by = 0; by < height; by += block_h) {
+        uint32_t bh = height - by;
+        if (bh > block_h) {
+            bh = block_h;
+        }
+        for (uint32_t bx = 0; bx < width; bx += block_w) {
+            uint32_t bw = width - bx;
+            if (bw > block_w) {
+                bw = block_w;
+            }
+
+            uint32_t sum = 0;
+            for (uint32_t y = 0; y < bh; ++y) {
+                const uint8_t *src_row = src + (by + y) * stride + bx;
+                for (uint32_t x = 0; x < bw; ++x) {
+                    sum += src_row[x];
+                }
+            }
+            uint8_t luma = (uint8_t) (sum / (bw * bh));
+            for (uint32_t y = 0; y < bh; ++y) {
+                uint8_t *dst_row = dst + (by + y) * stride + bx;
+                memset(dst_row, luma, bw);
+            }
+        }
+    }
+
+    memset(dst + y_plane_size, 0x80, uv_plane_size);
+    if (frame_size > min_size) {
+        memset(dst + min_size, 0, frame_size - min_size);
+    }
+}
+
 static uint32_t estimate_frame_size_for_format(uint32_t pixel_format, uint32_t width, uint32_t height, uint32_t bytes_per_line) {
     uint32_t bpl = bytes_per_line > 0 ? bytes_per_line : width;
     if (bpl == 0 || height == 0) {
@@ -395,7 +468,7 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeOpen(JNIEnv *env, jclas
         return 0;
     }
 
-    int fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    int fd = open(path, O_RDWR | O_NONBLOCK);
     env->ReleaseStringUTFChars(device_path, path);
 
     if (fd < 0) {
@@ -415,7 +488,11 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeOpen(JNIEnv *env, jclas
     pthread_mutex_unlock(&g_instance_mutex);
 
     if (!is_capture_streaming_supported(fd)) {
-        LOGW("VIDIOC_QUERYCAP check failed on this device, continue with direct ioctls");
+        close(fd);
+        release_instance_slot();
+        errno = ENODEV;
+        throw_io_exception(env, "VIDIOC_QUERYCAP failed or capture/streaming unsupported");
+        return 0;
     }
 
     CaptureContext *ctx = (CaptureContext *) calloc(1, sizeof(CaptureContext));
@@ -430,6 +507,11 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeOpen(JNIEnv *env, jclas
     ctx->streaming = false;
 
     int resolved_port_type = resolve_port_type(source_type, port_type);
+    ctx->microdimming_enabled = ((uint32_t) resolved_port_type & 0x00010000U) != 0U;
+    ctx->microdimming_warned = false;
+    if (ctx->microdimming_enabled) {
+        LOGI("Amlogic microdimming path enabled by portType bit16");
+    }
     configure_port_type(ctx, resolved_port_type);
     configure_mode(ctx, mode);
     configure_rotation(ctx, rotation);
@@ -551,6 +633,7 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeOpen(JNIEnv *env, jclas
     }
 
     ctx->streaming = true;
+    notify_state_callback(0);
     ctx->width = fmt.fmt.pix.width;
     ctx->height = fmt.fmt.pix.height;
     ctx->pixel_format = fmt.fmt.pix.pixelformat;
@@ -667,7 +750,20 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeReadFrame(JNIEnv *env, 
             error_prefix = "Frame buffer too small";
             saved_errno = EMSGSIZE;
         } else {
-            memcpy(dst, ctx->buffers[buf.index].address, bytes_used);
+            const uint8_t *src = (const uint8_t *) ctx->buffers[buf.index].address;
+            if (ctx->microdimming_enabled) {
+                if (is_yuv420_family(ctx->pixel_format)) {
+                    apply_microdimming_yuv420(src, dst, ctx->width, ctx->height, ctx->bytes_per_line, bytes_used);
+                } else {
+                    if (!ctx->microdimming_warned) {
+                        LOGW("microdimming requested but unsupported pixel format 0x%x, passthrough frame", ctx->pixel_format);
+                        ctx->microdimming_warned = true;
+                    }
+                    memcpy(dst, src, bytes_used);
+                }
+            } else {
+                memcpy(dst, src, bytes_used);
+            }
 
             int64_t pts_us = (int64_t) buf.timestamp.tv_sec * 1000000LL + (int64_t) buf.timestamp.tv_usec;
             if (pts_us <= 0) {

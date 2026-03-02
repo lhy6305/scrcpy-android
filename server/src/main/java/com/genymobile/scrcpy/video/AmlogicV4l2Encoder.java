@@ -899,7 +899,7 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
 
     private static String resolveDevicePath(Options options) throws ConfigurationException {
         if (options.getAmlogicV4l2DeviceSet()) {
-            return options.getAmlogicV4l2Device();
+            Ln.w("Ignoring amlogic_v4l2_device for HAL-consistent behavior; using instance-based /dev/video11|12 mapping");
         }
         return resolveDevicePath(options.getAmlogicV4l2Instance());
     }
