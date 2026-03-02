@@ -134,6 +134,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
     private final Set<String> launcherIconRequested = new HashSet<>();
     private final AtomicLong launcherListRequestSeq = new AtomicLong(0);
     private final AtomicBoolean launcherStartInFlight = new AtomicBoolean(false);
+    private final AtomicBoolean launcherPrefetchScheduled = new AtomicBoolean(false);
     private LauncherAdapter launcherAdapter;
     private LruCache<String, android.graphics.Bitmap> launcherIconMemCache;
 
@@ -273,6 +274,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         remoteDeviceWidth = 0;
         remoteDeviceHeight = 0;
         lastRemoteOrientation = REMOTE_ORIENTATION_UNKNOWN;
+        launcherPrefetchScheduled.set(false);
 
         showConnectingUi(R.string.status_connecting_adb, false);
 
@@ -706,6 +708,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         remoteDeviceWidth = 0;
         remoteDeviceHeight = 0;
         lastRemoteOrientation = REMOTE_ORIENTATION_UNKNOWN;
+        launcherPrefetchScheduled.set(false);
 
         showConnectingUi(R.string.status_connecting_adb, false);
         deployThread = new Thread(() -> {
@@ -1027,6 +1030,32 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
                         Toast.makeText(PlayerActivity.this, msg, Toast.LENGTH_LONG).show();
                     }
                 });
+            }
+        });
+    }
+
+    private void prefetchLauncherListIfNeeded() {
+        if (TextUtils.isEmpty(serverAdr)) {
+            return;
+        }
+        if (!launcherPrefetchScheduled.compareAndSet(false, true)) {
+            return;
+        }
+        launcherExecutor.submit(() -> {
+            try {
+                LauncherListCacheSnapshot cacheSnapshot = readLauncherListCache();
+                if (cacheSnapshot != null && cacheSnapshot.isFresh()) {
+                    return;
+                }
+                ensureAgentDeployed();
+                String output = execAgentWithFallback("list");
+                writeLauncherListCache(output);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                launcherPrefetchScheduled.set(false);
+            } catch (Exception e) {
+                launcherPrefetchScheduled.set(false);
+                Log.w("scrcpy", "Launcher prefetch failed: " + briefError(e));
             }
         });
     }
@@ -2071,6 +2100,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
     public void onConnectionStateChanged(boolean connected) {
         if (connected) {
             cancelStreamTimeout();
+            prefetchLauncherListIfNeeded();
         }
     }
 
