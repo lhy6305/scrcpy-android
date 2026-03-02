@@ -100,6 +100,8 @@ public class SendCommands {
         command.append(" control=true");
         command.append(" tunnel_forward=true");
         command.append(" max_size=").append(maxSize);
+        // Keep server jar on device so stream-only reconnect can restart without re-push.
+        command.append(" cleanup=false");
         if (useAmlogicMode) {
             command.append(" amlogic_v4l2=true");
             command.append(" amlogic_v4l2_instance=1");
@@ -131,7 +133,8 @@ public class SendCommands {
             return Result.fail(Error.CANCELLED, "Cancelled");
         }
 
-        final String command = buildDetachedShellCommand(buildServerStartCommand(bitrate, maxSize, width, height, useAmlogicMode, scid));
+        // Keep initial deploy/start behavior compatible with older working flows.
+        final String command = buildServerStartCommand(bitrate, maxSize, width, height, useAmlogicMode, scid);
 
         try {
             adbWrite(context, ip, fileBase64, command, listener);
@@ -336,11 +339,14 @@ public class SendCommands {
 
             report(listener, Phase.STARTING_SERVER);
             stream.write(command + '\n');
-            Thread.sleep(120);
         } finally {
-            closeQuietly(stream);
-            closeQuietly(adb);
-            closeQuietly(sock);
+            // For initial deploy/start, keep historical behavior (leave channel open) because
+            // some vendor shells tie server lifetime to this shell session.
+            if (command != null && command.startsWith("(")) {
+                closeQuietly(stream);
+                closeQuietly(adb);
+                closeQuietly(sock);
+            }
         }
     }
 

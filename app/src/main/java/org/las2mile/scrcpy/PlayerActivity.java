@@ -1175,11 +1175,22 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
     }
 
     private void ensureAgentDeployed() throws IOException, InterruptedException {
-        if (agentDeployed) {
-            return;
-        }
-        byte[] base64 = loadAssetBase64(ApkViewerAgentClient.ASSET_NAME);
         AdbConnection adb = getAdbForTools();
+        if (agentDeployed) {
+            try {
+                String out = adb != null
+                        ? ApkViewerAgentClient.execAgent(adb, "--version")
+                        : ApkViewerAgentClient.execAgent(this, serverAdr, "--version");
+                if (isAgentVersionOk(out)) {
+                    return;
+                }
+            } catch (IOException ignore) {
+                // Fall through and redeploy.
+            }
+            agentDeployed = false;
+        }
+
+        byte[] base64 = loadAssetBase64(ApkViewerAgentClient.ASSET_NAME);
         if (adb != null) {
             ApkViewerAgentClient.deploy(adb, base64, null);
         } else {

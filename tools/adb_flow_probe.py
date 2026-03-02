@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Probe scrcpy stream-only reconnect and apkviewer-agent list behavior via adb.
+Probe scrcpy stream-only reconnect and apkviewer-agent launcher behavior via adb.
 
 This script intentionally uses `adb forward` for all client socket traffic.
 """
@@ -8,7 +8,6 @@ This script intentionally uses `adb forward` for all client socket traffic.
 from __future__ import annotations
 
 import argparse
-import os
 import socket
 import struct
 import subprocess
@@ -16,6 +15,17 @@ import sys
 import time
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
+
+
+def ensure_utf8_stdio() -> None:
+    # Windows consoles often default to GBK; force UTF-8 for deterministic logs.
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except ValueError:
+                pass
 
 
 def log(msg: str) -> None:
@@ -142,22 +152,10 @@ def build_detached_shell_command(command: str) -> str:
     trimmed = (command or "").strip()
     if trimmed.endswith(";"):
         trimmed = trimmed[:-1]
-    escaped = trimmed.replace("'", "'\"'\"'")
-    return (
-        "("
-        "(command -v nohup >/dev/null 2>&1 && nohup sh -c '"
-        + escaped
-        + "')"
-        " || "
-        "(command -v setsid >/dev/null 2>&1 && setsid sh -c '"
-        + escaped
-        + "')"
-        " || "
-        "("
-        + trimmed
-        + ")"
-        ") >/dev/null 2>&1 < /dev/null &"
-    )
+    if not trimmed:
+        return ""
+    # Match app SendCommands.buildDetachedShellCommand() behavior.
+    return "(" + trimmed + ") >/dev/null 2>&1 &"
 
 
 def stop_server_process(proc: Optional[subprocess.Popen], grace_s: float = 1.0) -> None:
@@ -173,7 +171,7 @@ def stop_server_process(proc: Optional[subprocess.Popen], grace_s: float = 1.0) 
         proc.wait(timeout=2.0)
 
 
-def build_server_cmd(scid_hex: str, bitrate: int, max_size: int) -> str:
+def build_server_cmd(scid_hex: str, bitrate: int, max_size: int, cleanup: bool) -> str:
     return (
         "CLASSPATH=/data/local/tmp/scrcpy-server.jar "
         "app_process / com.genymobile.scrcpy.Server 3.3.4 "
@@ -187,6 +185,7 @@ def build_server_cmd(scid_hex: str, bitrate: int, max_size: int) -> str:
         f"video_bit_rate={bitrate} "
         "control=true "
         "tunnel_forward=true "
+        f"cleanup={'true' if cleanup else 'false'} "
         f"max_size={max_size};"
     )
 
@@ -207,7 +206,51 @@ def count_agent_apps(output: str) -> int:
     return count
 
 
+def parse_first_app(output: str) -> Optional[Tuple[str, str]]:
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("APP|"):
+            continue
+        parts = line.split("|", 5)
+        if len(parts) < 3:
+            continue
+        pkg = parts[1].strip()
+        component = parts[2].strip()
+        if pkg and component:
+            return pkg, component
+    return None
+
+
+def is_am_start_success(output: str) -> bool:
+    lower = (output or "").strip().lower()
+    if not lower:
+        return False
+    if "error" in lower or "exception" in lower:
+        return False
+    if "starting" in lower or "status: ok" in lower:
+        return True
+    return "brought to the front" in lower or "intent has been delivered" in lower
+
+
+def is_monkey_success(output: str) -> bool:
+    lower = (output or "").strip().lower()
+    if not lower:
+        return False
+    if "error" in lower or "exception" in lower or "aborted" in lower:
+        return False
+    return "events injected: 1" in lower
+
+
+def remote_file_exists(adb: str, serial: str, path: str) -> bool:
+    cp = adb_cmd(adb, serial, ["shell", f"test -f {path} && echo 1 || echo 0"], timeout=10, check=True)
+    for line in cp.stdout.splitlines():
+        if line.strip() == "1":
+            return True
+    return False
+
+
 def main() -> int:
+    ensure_utf8_stdio()
     parser = argparse.ArgumentParser(description="Probe scrcpy reconnect and launcher agent behavior via adb.")
     parser.add_argument("--adb", default="adb", help="adb executable path")
     parser.add_argument("--serial", default="", help="adb serial (default: auto-detect first device)")
@@ -216,6 +259,12 @@ def main() -> int:
     parser.add_argument("--bitrate", type=int, default=2_048_000)
     parser.add_argument("--max-size", type=int, default=1920)
     parser.add_argument("--skip-agent", action="store_true", help="skip apkviewer-agent checks")
+    parser.add_argument(
+        "--cleanup",
+        choices=("true", "false"),
+        default="false",
+        help="scrcpy server cleanup option (false keeps scrcpy-server.jar for stream-only reconnect)",
+    )
     parser.add_argument(
         "--start-mode",
         choices=("detached", "foreground"),
@@ -240,6 +289,7 @@ def main() -> int:
         default=0.3,
         help="seconds between reconnect-with-restart retries",
     )
+    parser.add_argument("--skip-launch-test", action="store_true", help="skip launcher app start simulation")
     args = parser.parse_args()
 
     script_path = Path(__file__).resolve()
@@ -278,6 +328,9 @@ def main() -> int:
     start_ok = False
     reconnect_no_restart_ok = False
     reconnect_with_restart_ok = False
+    launcher_start_ok = False
+    server_jar_exists_before_restart: Optional[bool] = None
+    server_jar_exists_after_kill: Optional[bool] = None
 
     try:
         adb_cmd(args.adb, serial, ["shell", "pkill -f com.genymobile.scrcpy.Server || true"], timeout=10, check=False)
@@ -287,7 +340,8 @@ def main() -> int:
         if not args.skip_agent:
             adb_cmd(args.adb, serial, ["push", str(agent_jar), "/data/local/tmp/apkviewer-agent.jar"], timeout=60, check=True)
 
-        server_cmd = build_server_cmd(scid_hex, args.bitrate, args.max_size)
+        cleanup = args.cleanup == "true"
+        server_cmd = build_server_cmd(scid_hex, args.bitrate, args.max_size, cleanup=cleanup)
 
         # Initial deployment/start (equivalent to normal app flow after push).
         if args.start_mode == "foreground":
@@ -320,10 +374,14 @@ def main() -> int:
             log(f"reconnect without server restart: FAIL ({e})")
 
         # Simulate "reconnect stream only" with restart: no push, just restart server.
+        server_jar_exists_before_restart = remote_file_exists(args.adb, serial, "/data/local/tmp/scrcpy-server.jar")
+        log(f"remote server jar exists before restart: {server_jar_exists_before_restart}")
         adb_cmd(args.adb, serial, ["shell", "pkill -f com.genymobile.scrcpy.Server || true"], timeout=10, check=False)
         stop_server_process(server_proc_1)
         server_proc_1 = None
         time.sleep(0.5)
+        server_jar_exists_after_kill = remote_file_exists(args.adb, serial, "/data/local/tmp/scrcpy-server.jar")
+        log(f"remote server jar exists after kill: {server_jar_exists_after_kill}")
 
         if args.start_mode == "foreground":
             server_proc_2 = start_server_process(args.adb, serial, server_cmd)
@@ -369,6 +427,45 @@ def main() -> int:
             log(f"agent version output: {out_ver.strip()}")
             log(f"agent list apps: {app_count}")
 
+            if not args.skip_launch_test:
+                first_app = parse_first_app(out_list)
+                if first_app is None:
+                    log("launcher start probe skipped: no APP entry in list output")
+                else:
+                    pkg, component = first_app
+                    log(f"launcher start probe app: pkg={pkg}, component={component}")
+                    out_start = adb_cmd(
+                        args.adb,
+                        serial,
+                        ["shell", f"am start -n {component}"],
+                        timeout=20,
+                        check=False,
+                    ).stdout
+                    if is_am_start_success(out_start):
+                        launcher_start_ok = True
+                        log("launcher explicit start: OK")
+                    else:
+                        out_leanback = adb_cmd(
+                            args.adb,
+                            serial,
+                            ["shell", f"monkey -p {pkg} -c android.intent.category.LEANBACK_LAUNCHER 1"],
+                            timeout=20,
+                            check=False,
+                        ).stdout
+                        if is_monkey_success(out_leanback):
+                            launcher_start_ok = True
+                            log("launcher LEANBACK monkey start: OK")
+                        else:
+                            out_launcher = adb_cmd(
+                                args.adb,
+                                serial,
+                                ["shell", f"monkey -p {pkg} -c android.intent.category.LAUNCHER 1"],
+                                timeout=20,
+                                check=False,
+                            ).stdout
+                            launcher_start_ok = is_monkey_success(out_launcher)
+                            log(f"launcher LAUNCHER monkey start: {'OK' if launcher_start_ok else 'FAIL'}")
+
         log("probe completed")
         return 0
     except Exception as e:
@@ -390,7 +487,10 @@ def main() -> int:
             "summary: "
             f"initial_stream_ok={start_ok}, "
             f"reconnect_no_restart_ok={reconnect_no_restart_ok}, "
-            f"reconnect_with_restart_ok={reconnect_with_restart_ok}"
+            f"reconnect_with_restart_ok={reconnect_with_restart_ok}, "
+            f"launcher_start_ok={launcher_start_ok}, "
+            f"server_jar_before_restart={server_jar_exists_before_restart}, "
+            f"server_jar_after_kill={server_jar_exists_after_kill}"
         )
 
 
