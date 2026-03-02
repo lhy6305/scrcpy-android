@@ -13,6 +13,7 @@ captures/
 .externalNativeBuild/
 .cxx/
 **/.cxx/
+*.pyc
 
 # Generated server payload copied into app assets
 app/src/main/assets/*.jar
