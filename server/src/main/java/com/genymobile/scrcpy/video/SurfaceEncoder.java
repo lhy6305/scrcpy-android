@@ -32,10 +32,6 @@ public class SurfaceEncoder implements AsyncProcessor {
     private static final int DEFAULT_I_FRAME_INTERVAL = 10; // seconds
     private static final int REPEAT_FRAME_DELAY_US = 100_000; // repeat after 100ms
     private static final String KEY_MAX_FPS_TO_ENCODER = "max-fps-to-encoder";
-    private static final long LATE_FRAME_DROP_THRESHOLD_US = 250_000;
-    private static final long LATE_FRAME_RECOVER_THRESHOLD_US = 120_000;
-    private static final long SYNC_FRAME_REQUEST_INTERVAL_MS = 500;
-    private static final long FORCE_RECOVER_DROP_COUNT = 120;
 
     // Keep the values in descending order
     private static final int[] MAX_SIZE_FALLBACK = {2560, 1920, 1600, 1280, 1024, 800};
@@ -48,6 +44,11 @@ public class SurfaceEncoder implements AsyncProcessor {
     private final int videoBitRate;
     private final float maxFps;
     private final boolean downsizeOnError;
+    private final boolean videoLatencyDropEnabled;
+    private final long lateFrameDropThresholdUs;
+    private final long lateFrameRecoverThresholdUs;
+    private final long syncFrameRequestIntervalMs;
+    private final long forceRecoverDropCount;
 
     private boolean firstFrameSent;
     private int consecutiveErrors;
@@ -70,6 +71,11 @@ public class SurfaceEncoder implements AsyncProcessor {
         this.codecOptions = options.getVideoCodecOptions();
         this.encoderName = options.getVideoEncoder();
         this.downsizeOnError = options.getDownsizeOnError();
+        this.videoLatencyDropEnabled = options.getVideoLatencyDrop();
+        this.lateFrameDropThresholdUs = options.getVideoLatencyDropThresholdMs() * 1_000L;
+        this.lateFrameRecoverThresholdUs = options.getVideoLatencyRecoverThresholdMs() * 1_000L;
+        this.syncFrameRequestIntervalMs = options.getVideoSyncRequestIntervalMs();
+        this.forceRecoverDropCount = options.getVideoForceRecoverDropCount();
     }
 
     private void streamCapture() throws IOException, ConfigurationException {
@@ -245,12 +251,16 @@ public class SurfaceEncoder implements AsyncProcessor {
     }
 
     private boolean shouldDropFrame(MediaCodec codec, long ptsUs, boolean keyFrame) {
+        if (!videoLatencyDropEnabled) {
+            return false;
+        }
+
         long lateUs = computeLatencyDriftUs(ptsUs);
 
         long nowMs = SystemClock.elapsedRealtime();
 
         if (droppingFrames) {
-            if (keyFrame && (lateUs <= LATE_FRAME_RECOVER_THRESHOLD_US || droppedFrameCount >= FORCE_RECOVER_DROP_COUNT)) {
+            if (keyFrame && (lateUs <= lateFrameRecoverThresholdUs || droppedFrameCount >= forceRecoverDropCount)) {
                 droppingFrames = false;
                 Ln.i("Video latency recovered on key frame (late=" + (lateUs / 1_000) + "ms, dropped=" + droppedFrameCount + ")");
                 droppedFrameCount = 0;
@@ -265,7 +275,7 @@ public class SurfaceEncoder implements AsyncProcessor {
             return true;
         }
 
-        if (lateUs > LATE_FRAME_DROP_THRESHOLD_US && !keyFrame) {
+        if (lateUs > lateFrameDropThresholdUs && !keyFrame) {
             droppingFrames = true;
             droppedFrameCount = 1;
             maybeRequestSyncFrame(codec, nowMs);
@@ -291,7 +301,7 @@ public class SurfaceEncoder implements AsyncProcessor {
     }
 
     private void maybeRequestSyncFrame(MediaCodec codec, long nowMs) {
-        if (nowMs - lastSyncFrameRequestMs < SYNC_FRAME_REQUEST_INTERVAL_MS) {
+        if (syncFrameRequestIntervalMs > 0 && nowMs - lastSyncFrameRequestMs < syncFrameRequestIntervalMs) {
             return;
         }
 

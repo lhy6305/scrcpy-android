@@ -47,6 +47,11 @@ public class Options {
     private boolean audioDup;
     private int videoBitRate = 8000000;
     private int audioBitRate = 128000;
+    private boolean videoLatencyDrop = true;
+    private int videoLatencyDropThresholdMs = 250;
+    private int videoLatencyRecoverThresholdMs = 120;
+    private int videoSyncRequestIntervalMs = 500;
+    private int videoForceRecoverDropCount = 120;
     private float maxFps;
     private float angle;
     private boolean tunnelForward;
@@ -86,6 +91,7 @@ public class Options {
     private int amlogicV4l2PixelFormat = AML_V4L2_FMT_NV21; // NV21
     private boolean amlogicV4l2FallbackDevice;
     private boolean amlogicV4l2CropSet;
+    private int amlogicV4l2QueueDrainMax = 8;
 
     private String videoEncoder;
     private String audioEncoder;
@@ -161,6 +167,26 @@ public class Options {
 
     public int getAudioBitRate() {
         return audioBitRate;
+    }
+
+    public boolean getVideoLatencyDrop() {
+        return videoLatencyDrop;
+    }
+
+    public int getVideoLatencyDropThresholdMs() {
+        return videoLatencyDropThresholdMs;
+    }
+
+    public int getVideoLatencyRecoverThresholdMs() {
+        return videoLatencyRecoverThresholdMs;
+    }
+
+    public int getVideoSyncRequestIntervalMs() {
+        return videoSyncRequestIntervalMs;
+    }
+
+    public int getVideoForceRecoverDropCount() {
+        return videoForceRecoverDropCount;
     }
 
     public float getMaxFps() {
@@ -317,6 +343,10 @@ public class Options {
 
     public boolean getAmlogicV4l2FallbackDevice() {
         return amlogicV4l2FallbackDevice;
+    }
+
+    public int getAmlogicV4l2QueueDrainMax() {
+        return amlogicV4l2QueueDrainMax;
     }
 
     public String getAudioEncoder() {
@@ -491,6 +521,34 @@ public class Options {
                     break;
                 case "audio_bit_rate":
                     options.audioBitRate = Integer.parseInt(value);
+                    break;
+                case "video_latency_drop":
+                    options.videoLatencyDrop = Boolean.parseBoolean(value);
+                    break;
+                case "video_latency_drop_threshold_ms":
+                    options.videoLatencyDropThresholdMs = Integer.parseInt(value);
+                    if (options.videoLatencyDropThresholdMs < 0) {
+                        throw new IllegalArgumentException("Invalid video_latency_drop_threshold_ms: " + options.videoLatencyDropThresholdMs);
+                    }
+                    break;
+                case "video_latency_recover_threshold_ms":
+                    options.videoLatencyRecoverThresholdMs = Integer.parseInt(value);
+                    if (options.videoLatencyRecoverThresholdMs < 0) {
+                        throw new IllegalArgumentException(
+                                "Invalid video_latency_recover_threshold_ms: " + options.videoLatencyRecoverThresholdMs);
+                    }
+                    break;
+                case "video_sync_request_interval_ms":
+                    options.videoSyncRequestIntervalMs = Integer.parseInt(value);
+                    if (options.videoSyncRequestIntervalMs < 0) {
+                        throw new IllegalArgumentException("Invalid video_sync_request_interval_ms: " + options.videoSyncRequestIntervalMs);
+                    }
+                    break;
+                case "video_force_recover_drop_count":
+                    options.videoForceRecoverDropCount = Integer.parseInt(value);
+                    if (options.videoForceRecoverDropCount <= 0) {
+                        throw new IllegalArgumentException("Invalid video_force_recover_drop_count: " + options.videoForceRecoverDropCount);
+                    }
                     break;
                 case "max_fps":
                     options.maxFps = parseFloat("max_fps", value);
@@ -672,6 +730,12 @@ public class Options {
                     break;
                 case "amlogic_v4l2_fallback_device":
                     options.amlogicV4l2FallbackDevice = Boolean.parseBoolean(value);
+                    break;
+                case "amlogic_v4l2_queue_drain_max":
+                    options.amlogicV4l2QueueDrainMax = Integer.parseInt(value);
+                    if (options.amlogicV4l2QueueDrainMax < 0) {
+                        throw new IllegalArgumentException("Invalid amlogic_v4l2_queue_drain_max: " + options.amlogicV4l2QueueDrainMax);
+                    }
                     break;
                 case "audio_encoder":
                     if (!value.isEmpty()) {

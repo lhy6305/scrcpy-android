@@ -40,6 +40,17 @@ class Stats:
     lag_max_ms: float = 0.0
 
 
+def ensure_utf8_stdio() -> None:
+    # Windows defaults to GBK in many shells; force UTF-8 to keep logs deterministic.
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except ValueError:
+                pass
+
+
 def run_cmd(args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
     proc = subprocess.run(
         args,
@@ -99,6 +110,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-fps", type=int, default=30)
     parser.add_argument("--max-size", type=int, default=1280)
     parser.add_argument("--video-bit-rate", type=int, default=8000000)
+    parser.add_argument("--video-latency-drop", choices=["true", "false"], default="true")
+    parser.add_argument("--video-latency-drop-threshold-ms", type=int, default=250)
+    parser.add_argument("--video-latency-recover-threshold-ms", type=int, default=120)
+    parser.add_argument("--video-sync-request-interval-ms", type=int, default=500)
+    parser.add_argument("--video-force-recover-drop-count", type=int, default=120)
+    parser.add_argument("--amlogic-v4l2-queue-drain-max", type=int, default=8)
 
     parser.add_argument("--amlogic", action="store_true", help="enable amlogic_v4l2 mode")
     parser.add_argument("--amlogic-instance", type=int, default=1)
@@ -125,6 +142,11 @@ def build_server_command(args: argparse.Namespace, scid: str) -> str:
         "control=false",
         "video_source=display",
         f"video_bit_rate={args.video_bit_rate}",
+        f"video_latency_drop={args.video_latency_drop}",
+        f"video_latency_drop_threshold_ms={args.video_latency_drop_threshold_ms}",
+        f"video_latency_recover_threshold_ms={args.video_latency_recover_threshold_ms}",
+        f"video_sync_request_interval_ms={args.video_sync_request_interval_ms}",
+        f"video_force_recover_drop_count={args.video_force_recover_drop_count}",
         f"max_fps={args.max_fps}",
         f"max_size={args.max_size}",
         "tunnel_forward=true",
@@ -144,6 +166,7 @@ def build_server_command(args: argparse.Namespace, scid: str) -> str:
                 f"amlogic_v4l2_fps={args.amlogic_fps}",
                 f"amlogic_v4l2_reqbufs={args.amlogic_reqbufs}",
                 f"amlogic_v4l2_format={args.amlogic_format}",
+                f"amlogic_v4l2_queue_drain_max={args.amlogic_v4l2_queue_drain_max}",
             ]
         )
     return " ".join(opts)
@@ -346,6 +369,7 @@ def run_probe(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    ensure_utf8_stdio()
     args = parse_args()
     try:
         return run_probe(args)

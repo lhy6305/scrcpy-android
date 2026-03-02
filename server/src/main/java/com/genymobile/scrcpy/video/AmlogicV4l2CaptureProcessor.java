@@ -30,14 +30,15 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
     private static final String KEY_MAX_FPS_TO_ENCODER = "max-fps-to-encoder";
     private static final long AUTO_RESET_STALL_MS = 3000;
     private static final long AUTO_RESET_STARTUP_STALL_MS = 8000;
-    private static final int MAX_CAPTURE_QUEUE_DRAIN = 8;
-    private static final long LATE_FRAME_DROP_THRESHOLD_US = 250_000;
-    private static final long LATE_FRAME_RECOVER_THRESHOLD_US = 120_000;
-    private static final long SYNC_FRAME_REQUEST_INTERVAL_MS = 500;
-    private static final long FORCE_RECOVER_DROP_COUNT = 120;
 
     private final Streamer streamer;
     private final Options options;
+    private final boolean videoLatencyDropEnabled;
+    private final int captureQueueDrainMax;
+    private final long lateFrameDropThresholdUs;
+    private final long lateFrameRecoverThresholdUs;
+    private final long syncFrameRequestIntervalMs;
+    private final long forceRecoverDropCount;
     private final AtomicBoolean stopped = new AtomicBoolean();
     private final AtomicBoolean resetRequested = new AtomicBoolean();
 
@@ -51,6 +52,12 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
     public AmlogicV4l2CaptureProcessor(Streamer streamer, Options options) {
         this.streamer = streamer;
         this.options = options;
+        this.videoLatencyDropEnabled = options.getVideoLatencyDrop();
+        this.captureQueueDrainMax = options.getAmlogicV4l2QueueDrainMax();
+        this.lateFrameDropThresholdUs = options.getVideoLatencyDropThresholdMs() * 1_000L;
+        this.lateFrameRecoverThresholdUs = options.getVideoLatencyRecoverThresholdMs() * 1_000L;
+        this.syncFrameRequestIntervalMs = options.getVideoSyncRequestIntervalMs();
+        this.forceRecoverDropCount = options.getVideoForceRecoverDropCount();
     }
 
     private void streamCapture() throws IOException, ConfigurationException {
@@ -377,9 +384,13 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
 
     private int keepLatestFrame(AmlogicV4l2CaptureNative capture, ByteBuffer frameBuffer, AmlogicV4l2CaptureNative.FrameMetadata metadata,
             int currentSize, String path) throws IOException {
+        if (captureQueueDrainMax <= 0) {
+            return currentSize;
+        }
+
         int droppedQueued = 0;
 
-        for (int i = 0; i < MAX_CAPTURE_QUEUE_DRAIN; ++i) {
+        for (int i = 0; i < captureQueueDrainMax; ++i) {
             AmlogicV4l2CaptureNative.FrameMetadata next = new AmlogicV4l2CaptureNative.FrameMetadata();
             frameBuffer.clear();
             int nextSize = capture.readFrame(frameBuffer, next);
@@ -403,12 +414,16 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
     }
 
     private boolean shouldDropFrame(MediaCodec codec, long ptsUs, boolean keyFrame, String path) {
+        if (!videoLatencyDropEnabled) {
+            return false;
+        }
+
         long lateUs = computeLatencyDriftUs(ptsUs);
 
         long nowMs = SystemClock.elapsedRealtime();
 
         if (droppingFrames) {
-            if (keyFrame && (lateUs <= LATE_FRAME_RECOVER_THRESHOLD_US || droppedFrameCount >= FORCE_RECOVER_DROP_COUNT)) {
+            if (keyFrame && (lateUs <= lateFrameRecoverThresholdUs || droppedFrameCount >= forceRecoverDropCount)) {
                 droppingFrames = false;
                 Ln.i("Amlogic " + path + " latency recovered on key frame (late=" + (lateUs / 1_000) + "ms, dropped="
                         + droppedFrameCount + ")");
@@ -424,7 +439,7 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
             return true;
         }
 
-        if (lateUs > LATE_FRAME_DROP_THRESHOLD_US && !keyFrame) {
+        if (lateUs > lateFrameDropThresholdUs && !keyFrame) {
             droppingFrames = true;
             droppedFrameCount = 1;
             maybeRequestSyncFrame(codec, nowMs, path);
@@ -453,7 +468,7 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
         if (codec == null) {
             return;
         }
-        if (nowMs - lastSyncFrameRequestMs < SYNC_FRAME_REQUEST_INTERVAL_MS) {
+        if (syncFrameRequestIntervalMs > 0 && nowMs - lastSyncFrameRequestMs < syncFrameRequestIntervalMs) {
             return;
         }
 
