@@ -74,7 +74,6 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
     public static final String EXTRA_WIDTH = "w";
     public static final String EXTRA_HEIGHT = "h";
     public static final String EXTRA_BITRATE = "b";
-    public static final String EXTRA_NO_CONTROL = "no_control";
     public static final String EXTRA_NAV = "nav";
     public static final String EXTRA_AMLOGIC_MODE = "amlogic_mode";
 
@@ -85,6 +84,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
     private static final String PREF_KEY = "default";
     private static final String PREF_FLOAT_BALL_X = "float_ball_x_ratio";
     private static final String PREF_FLOAT_BALL_Y = "float_ball_y_ratio";
+    private static final String APKVIEWER_AGENT_VERSION = "1";
 
     private static final SecureRandom SCID_RANDOM = new SecureRandom();
 
@@ -92,7 +92,6 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
     private int screenWidth;
     private int screenHeight;
     private int videoBitrate;
-    private boolean noControl;
     private boolean nav;
     private boolean useAmlogicMode;
     private int sessionScid = -1;
@@ -175,11 +174,11 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         screenWidth = intent != null ? intent.getIntExtra(EXTRA_WIDTH, 0) : 0;
         screenHeight = intent != null ? intent.getIntExtra(EXTRA_HEIGHT, 0) : 0;
         videoBitrate = intent != null ? intent.getIntExtra(EXTRA_BITRATE, 0) : 0;
-        noControl = intent != null && intent.getBooleanExtra(EXTRA_NO_CONTROL, false);
         nav = intent != null && intent.getBooleanExtra(EXTRA_NAV, false);
         useAmlogicMode = intent != null && intent.getBooleanExtra(EXTRA_AMLOGIC_MODE, false);
 
-        inputEnabled = !noControl;
+        // Always start with control enabled. Disabling control is a runtime toggle that only blocks input sending.
+        inputEnabled = true;
         navBarVisible = nav;
 
         sessionScid = generateScid();
@@ -578,7 +577,9 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
                 if (serviceBound && scrcpy != null) {
                     scrcpy.setClipboardSyncEnabled(clipboardSyncEnabled);
                 }
-                Toast.makeText(this, clipboardSyncEnabled ? "Clipboard sync enabled" : "Clipboard sync disabled", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this,
+                        clipboardSyncEnabled ? R.string.toast_clipboard_sync_enabled : R.string.toast_clipboard_sync_disabled,
+                        Toast.LENGTH_SHORT).show();
                 return true;
             }
 
@@ -650,17 +651,40 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         remoteDeviceWidth = 0;
         remoteDeviceHeight = 0;
         lastRemoteOrientation = REMOTE_ORIENTATION_UNKNOWN;
-        showConnectingUi(R.string.status_connecting, false);
-        startScrcpyServiceAndBind();
+
+        showConnectingUi(R.string.status_connecting_adb, false);
+        deployThread = new Thread(() -> {
+            SendCommands.Result result = sendCommands.startServerOnly(
+                    PlayerActivity.this,
+                    serverAdr,
+                    videoBitrate,
+                    Math.max(screenHeight, screenWidth),
+                    screenWidth,
+                    screenHeight,
+                    useAmlogicMode,
+                    sessionScid,
+                    phase -> runOnUiThread(() -> showConnectingUi(getStatusTextForPhase(phase), false))
+            );
+
+            runOnUiThread(() -> {
+                if (!result.success) {
+                    showErrorUi(getErrorTextForSendCommands(result.error));
+                    return;
+                }
+                showConnectingUi(R.string.status_connecting, false);
+                startScrcpyServiceAndBind();
+            });
+        }, "scrcpy-reconnect");
+        deployThread.start();
     }
 
     private void sendKeyIfAllowed(int keyCode) {
         if (!inputEnabled) {
-            Toast.makeText(this, "Control disabled", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.toast_control_disabled, Toast.LENGTH_SHORT).show();
             return;
         }
         if (!(serviceBound && scrcpy != null)) {
-            Toast.makeText(this, "Not connected", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.toast_not_connected, Toast.LENGTH_SHORT).show();
             return;
         }
         scrcpy.sendKeyevent(keyCode);
@@ -668,7 +692,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
 
     private void pullRemoteClipboardToLocal() {
         if (TextUtils.isEmpty(serverAdr)) {
-            Toast.makeText(this, "Not connected", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.toast_not_connected, Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -678,17 +702,17 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
                 String out = ApkViewerAgentClient.execAgent(PlayerActivity.this, serverAdr, "clip-get");
                 String text = parseClipGet(out);
                 if (text == null) {
-                    runOnUiThread(() -> Toast.makeText(PlayerActivity.this, "Remote clipboard empty", Toast.LENGTH_SHORT).show());
+                    runOnUiThread(() -> Toast.makeText(PlayerActivity.this, R.string.toast_remote_clipboard_empty, Toast.LENGTH_SHORT).show());
                     return;
                 }
                 runOnUiThread(() -> {
                     setLocalClipboardText(text);
-                    Toast.makeText(PlayerActivity.this, "Clipboard updated", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(PlayerActivity.this, R.string.toast_clipboard_updated, Toast.LENGTH_SHORT).show();
                 });
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch (Exception e) {
-                runOnUiThread(() -> Toast.makeText(PlayerActivity.this, "Failed to pull clipboard", Toast.LENGTH_SHORT).show());
+                runOnUiThread(() -> Toast.makeText(PlayerActivity.this, R.string.toast_clipboard_pull_failed, Toast.LENGTH_SHORT).show());
             }
         });
     }
@@ -723,35 +747,35 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
 
     private void pasteLocalClipboardToRemote() {
         if (!inputEnabled) {
-            Toast.makeText(this, "Control disabled", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.toast_control_disabled, Toast.LENGTH_SHORT).show();
             return;
         }
         if (!(serviceBound && scrcpy != null)) {
-            Toast.makeText(this, "Not connected", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.toast_not_connected, Toast.LENGTH_SHORT).show();
             return;
         }
 
         String text = readLocalClipboardText();
         if (text == null || text.isEmpty()) {
-            Toast.makeText(this, "Local clipboard empty", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.toast_local_clipboard_empty, Toast.LENGTH_SHORT).show();
             return;
         }
         scrcpy.setClipboard(text, true);
-        Toast.makeText(this, "Pasted", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, R.string.toast_pasted, Toast.LENGTH_SHORT).show();
     }
 
     private void showTextInputDialog() {
         if (!inputEnabled) {
-            Toast.makeText(this, "Control disabled", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.toast_control_disabled, Toast.LENGTH_SHORT).show();
             return;
         }
         if (!(serviceBound && scrcpy != null)) {
-            Toast.makeText(this, "Not connected", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.toast_not_connected, Toast.LENGTH_SHORT).show();
             return;
         }
 
         final EditText editText = new EditText(this);
-        editText.setHint("Input text");
+        editText.setHint(R.string.hint_input_text);
         editText.setSingleLine(false);
         editText.setMinLines(1);
         editText.setMaxLines(4);
@@ -886,7 +910,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
 
     private void loadLauncherAppList() {
         if (TextUtils.isEmpty(serverAdr)) {
-            Toast.makeText(this, "Server address missing", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.toast_server_address_missing, Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -918,7 +942,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
                     if (launcherProgress != null) {
                         launcherProgress.setVisibility(View.GONE);
                     }
-                    Toast.makeText(PlayerActivity.this, "Failed to load apps", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(PlayerActivity.this, R.string.toast_failed_load_apps, Toast.LENGTH_SHORT).show();
                 });
             }
         });
@@ -1104,7 +1128,29 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         }
         byte[] base64 = loadAssetBase64(ApkViewerAgentClient.ASSET_NAME);
         ApkViewerAgentClient.deploy(this, serverAdr, base64, null);
+
+        // Ensure the remote jar is valid and runnable (e.g. base64 command might be missing on some ROMs).
+        String out = ApkViewerAgentClient.execAgent(this, serverAdr, "--version");
+        if (!isAgentVersionOk(out)) {
+            throw new IOException("apkviewer-agent verify failed");
+        }
         agentDeployed = true;
+    }
+
+    private static boolean isAgentVersionOk(String output) {
+        if (output == null || output.isEmpty()) {
+            return false;
+        }
+        String[] lines = output.split("\n");
+        for (String rawLine : lines) {
+            String line = rawLine != null ? rawLine.trim() : "";
+            if (!line.startsWith("VERSION|")) {
+                continue;
+            }
+            String[] parts = line.split("\\|", 2);
+            return parts.length == 2 && APKVIEWER_AGENT_VERSION.equals(parts[1]);
+        }
+        return false;
     }
 
     private byte[] loadAssetBase64(String assetName) throws IOException {
@@ -1168,11 +1214,11 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             return;
         }
         if (!inputEnabled) {
-            Toast.makeText(this, "Control disabled", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.toast_control_disabled, Toast.LENGTH_SHORT).show();
             return;
         }
         if (TextUtils.isEmpty(serverAdr)) {
-            Toast.makeText(this, "Not connected", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.toast_not_connected, Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -1182,13 +1228,57 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             try {
                 // Explicit component start. This matches a launcher icon click best on TV boxes.
                 String cmd = "am start -n " + app.component;
-                ApkViewerAgentClient.exec(PlayerActivity.this, serverAdr, cmd);
+                String out = ApkViewerAgentClient.exec(PlayerActivity.this, serverAdr, cmd);
+                if (isAmStartSuccess(out)) {
+                    return;
+                }
+
+                // Fallback: some apps might not start via explicit component (or component changed).
+                String outLeanback = ApkViewerAgentClient.exec(PlayerActivity.this, serverAdr,
+                        "monkey -p " + app.packageName + " -c android.intent.category.LEANBACK_LAUNCHER 1");
+                if (isMonkeySuccess(outLeanback)) {
+                    return;
+                }
+
+                String outLauncher = ApkViewerAgentClient.exec(PlayerActivity.this, serverAdr,
+                        "monkey -p " + app.packageName + " -c android.intent.category.LAUNCHER 1");
+                if (isMonkeySuccess(outLauncher)) {
+                    return;
+                }
+
+                runOnUiThread(() -> Toast.makeText(PlayerActivity.this, R.string.toast_failed_start_app, Toast.LENGTH_SHORT).show());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch (Exception e) {
-                runOnUiThread(() -> Toast.makeText(PlayerActivity.this, "Failed to start app", Toast.LENGTH_SHORT).show());
+                runOnUiThread(() -> Toast.makeText(PlayerActivity.this, R.string.toast_failed_start_app, Toast.LENGTH_SHORT).show());
             }
         });
+    }
+
+    private static boolean isAmStartSuccess(String output) {
+        if (output == null || output.isEmpty()) {
+            return false;
+        }
+        String lower = output.toLowerCase(Locale.US);
+        if (lower.contains("error") || lower.contains("exception")) {
+            return false;
+        }
+        if (lower.contains("starting") || lower.contains("status: ok")) {
+            return true;
+        }
+        // Examples: "Activity not started, its current task has been brought to the front".
+        return lower.contains("brought to the front") || lower.contains("intent has been delivered");
+    }
+
+    private static boolean isMonkeySuccess(String output) {
+        if (output == null || output.isEmpty()) {
+            return false;
+        }
+        String lower = output.toLowerCase(Locale.US);
+        if (lower.contains("error") || lower.contains("exception") || lower.contains("aborted")) {
+            return false;
+        }
+        return lower.contains("events injected: 1");
     }
 
     private File getIconCacheFile(LauncherApp app, int sizePx) {

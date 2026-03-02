@@ -8,12 +8,15 @@ local.properties
 # Build outputs
 build/
 **/build/
-release-out/
+release-out/*
 captures/
 .externalNativeBuild/
 .cxx/
 **/.cxx/
 *.pyc
+
+!release-out/scrcpy-server.jar
+!release-out/scrcpy-release-signed.apk
 
 # Generated server payload copied into app assets
 app/src/main/assets/*.jar

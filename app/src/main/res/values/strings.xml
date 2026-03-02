@@ -62,12 +62,25 @@
     <string name="menu_clipboard_paste_local">Clipboard: Paste local to remote</string>
     <string name="menu_soft_keyboard">Input text...</string>
 
+    <string name="toast_control_disabled">Control disabled</string>
+    <string name="toast_not_connected">Not connected</string>
+    <string name="toast_clipboard_sync_enabled">Clipboard sync enabled</string>
+    <string name="toast_clipboard_sync_disabled">Clipboard sync disabled</string>
+    <string name="toast_remote_clipboard_empty">Remote clipboard empty</string>
+    <string name="toast_clipboard_updated">Clipboard updated</string>
+    <string name="toast_clipboard_pull_failed">Failed to pull clipboard</string>
+    <string name="toast_local_clipboard_empty">Local clipboard empty</string>
+    <string name="toast_pasted">Pasted</string>
+    <string name="hint_input_text">Input text</string>
+    <string name="toast_server_address_missing">Server address missing</string>
+    <string name="toast_failed_load_apps">Failed to load apps</string>
+    <string name="toast_failed_start_app">Failed to start app</string>
+
     <string name="launcher_search_hint">Search apps</string>
     <string name="launcher_icon_desc">App icon</string>
     <string name="appswitch_button">=</string>
     <string name="home_button">o</string>
     <string name="back_button">v</string>
-    <string name="switch0">No Control  (check this if remote device control is not required)</string>
     <string name="switch1">Nav Bar  (check this if remote device does not have on-screen nav bar)</string>
     <string name="switch2">Amlogic Device Dedicated Mode</string>
 

@@ -85,12 +85,7 @@ public class SendCommands {
         };
     }
 
-    public Result sendAdbCommands(Context context, final byte[] fileBase64, final String ip, int bitrate, int maxSize,
-            int width, int height, boolean useAmlogicMode, int scid, ProgressListener listener) {
-        if (Thread.currentThread().isInterrupted()) {
-            return Result.fail(Error.CANCELLED, "Cancelled");
-        }
-
+    private static String buildServerStartCommand(int bitrate, int maxSize, int width, int height, boolean useAmlogicMode, int scid) {
         final StringBuilder command = new StringBuilder();
         command.append(" CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server 3.3.4");
         command.append(" log_level=info");
@@ -115,9 +110,47 @@ public class SendCommands {
             command.append(" amlogic_v4l2_format=nv21");
         }
         command.append(";");
+        return command.toString();
+    }
+
+    public Result sendAdbCommands(Context context, final byte[] fileBase64, final String ip, int bitrate, int maxSize,
+            int width, int height, boolean useAmlogicMode, int scid, ProgressListener listener) {
+        if (Thread.currentThread().isInterrupted()) {
+            return Result.fail(Error.CANCELLED, "Cancelled");
+        }
+
+        final String command = buildServerStartCommand(bitrate, maxSize, width, height, useAmlogicMode, scid);
 
         try {
-            adbWrite(context, ip, fileBase64, command.toString(), listener);
+            adbWrite(context, ip, fileBase64, command, listener);
+            return Result.ok();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Result.fail(Error.CANCELLED, "Cancelled");
+        } catch (UnknownHostException e) {
+            return Result.fail(Error.INVALID_HOST, e.getMessage());
+        } catch (ConnectException e) {
+            return Result.fail(Error.CONNECTION_REFUSED, e.getMessage());
+        } catch (NoRouteToHostException e) {
+            return Result.fail(Error.NO_ROUTE, e.getMessage());
+        } catch (SocketTimeoutException e) {
+            return Result.fail(Error.TIMEOUT, e.getMessage());
+        } catch (IOException e) {
+            return Result.fail(Error.IO, e.getMessage());
+        } catch (RuntimeException e) {
+            return Result.fail(Error.UNKNOWN, e.getMessage());
+        }
+    }
+
+    public Result startServerOnly(Context context, final String ip, int bitrate, int maxSize,
+            int width, int height, boolean useAmlogicMode, int scid, ProgressListener listener) {
+        if (Thread.currentThread().isInterrupted()) {
+            return Result.fail(Error.CANCELLED, "Cancelled");
+        }
+
+        final String command = buildServerStartCommand(bitrate, maxSize, width, height, useAmlogicMode, scid);
+        try {
+            adbStartOnly(context, ip, command, listener);
             return Result.ok();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -258,6 +291,60 @@ public class SendCommands {
             }
         }
         stream.write(" base64 -d < serverBase64 > scrcpy-server.jar && rm serverBase64\n");
+        if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+            throw new SocketTimeoutException("Timed out waiting for shell prompt");
+        }
+
+        report(listener, Phase.STARTING_SERVER);
+        stream.write(command + '\n');
+    }
+
+    private static void adbStartOnly(Context context, String ip, String command, ProgressListener listener)
+            throws IOException, InterruptedException {
+        checkCancelled();
+        AdbCrypto crypto = setupCrypto(context);
+
+        report(listener, Phase.CONNECTING_ADB);
+        Socket sock = new Socket();
+        try {
+            sock.connect(new InetSocketAddress(ip, 5555), CONNECT_TIMEOUT_MS);
+            sock.setSoTimeout(SOCKET_TIMEOUT_MS);
+            Log.i("scrcpy", "ADB socket connection successful");
+        } catch (UnknownHostException e) {
+            throw new UnknownHostException(ip + " is not a valid host");
+        } catch (ConnectException e) {
+            throw new ConnectException("Device at " + ip + ":" + 5555 + " refused connection");
+        } catch (NoRouteToHostException e) {
+            throw new NoRouteToHostException("Couldn't find adb device at " + ip + ":" + 5555);
+        }
+
+        AdbConnection adb = null;
+        AdbStream stream = null;
+        try {
+            adb = AdbConnection.create(sock, crypto);
+            adb.connect();
+        } catch (IOException | InterruptedException e) {
+            closeQuietly(sock);
+            throw e;
+        } catch (IllegalStateException e) {
+            closeQuietly(sock);
+            throw new IOException("ADB connection in illegal state", e);
+        }
+
+        report(listener, Phase.OPENING_SHELL);
+        stream = adb.open("shell:");
+
+        report(listener, Phase.WAITING_SHELL);
+        stream.write(" \n");
+        if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+            throw new SocketTimeoutException("Timed out waiting for shell prompt");
+        }
+
+        stream.write(" command -v pkill >/dev/null 2>&1 && pkill -f com.genymobile.scrcpy.Server || true\n");
+        if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+            throw new SocketTimeoutException("Timed out waiting for shell prompt");
+        }
+        stream.write(" cd /data/local/tmp\n");
         if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
             throw new SocketTimeoutException("Timed out waiting for shell prompt");
         }

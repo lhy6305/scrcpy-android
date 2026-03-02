@@ -22,47 +22,33 @@ public class SettingsActivity extends Activity {
         setContentView(R.layout.activity_main);
 
         final EditText editTextServerHost = findViewById(R.id.editText_server_host);
-        final Switch switchNoControl = findViewById(R.id.switch0);
         final Switch switchNav = findViewById(R.id.switch1);
         final Switch switchAmlogic = findViewById(R.id.switch2);
         final Button startButton = findViewById(R.id.button_start);
 
         // Restore preferences
         editTextServerHost.setText(getSharedPreferences(PREFERENCE_KEY, 0).getString("Server Address", ""));
-        switchNoControl.setChecked(getSharedPreferences(PREFERENCE_KEY, 0).getBoolean("No Control", false));
         switchNav.setChecked(getSharedPreferences(PREFERENCE_KEY, 0).getBoolean("Nav Switch", false));
         switchAmlogic.setChecked(getSharedPreferences(PREFERENCE_KEY, 0).getBoolean("Amlogic Mode", false));
 
         setSpinner(R.array.options_resolution_values, R.id.spinner_video_resolution, PREFERENCE_SPINNER_RESOLUTION);
         setSpinner(R.array.options_bitrate_keys, R.id.spinner_video_bitrate, PREFERENCE_SPINNER_BITRATE);
 
-        updateNavVisibility(switchNoControl, switchNav);
-        switchNoControl.setOnCheckedChangeListener((buttonView, isChecked) -> updateNavVisibility(switchNoControl, switchNav));
-
         startButton.setOnClickListener(v -> startPlayer());
-    }
-
-    private void updateNavVisibility(Switch noControlSwitch, Switch navSwitch) {
-        if (noControlSwitch != null && navSwitch != null) {
-            navSwitch.setVisibility(noControlSwitch.isChecked() ? android.view.View.GONE : android.view.View.VISIBLE);
-        }
     }
 
     private void startPlayer() {
         final EditText editTextServerHost = findViewById(R.id.editText_server_host);
         final Spinner videoResolutionSpinner = findViewById(R.id.spinner_video_resolution);
         final Spinner videoBitrateSpinner = findViewById(R.id.spinner_video_bitrate);
-        final Switch switchNoControl = findViewById(R.id.switch0);
         final Switch switchNav = findViewById(R.id.switch1);
         final Switch switchAmlogic = findViewById(R.id.switch2);
 
         String serverAdr = editTextServerHost != null ? editTextServerHost.getText().toString().trim() : "";
         getSharedPreferences(PREFERENCE_KEY, 0).edit().putString("Server Address", serverAdr).apply();
 
-        boolean noControl = switchNoControl != null && switchNoControl.isChecked();
         boolean nav = switchNav != null && switchNav.isChecked();
         boolean useAmlogicMode = switchAmlogic != null && switchAmlogic.isChecked();
-        getSharedPreferences(PREFERENCE_KEY, 0).edit().putBoolean("No Control", noControl).apply();
         getSharedPreferences(PREFERENCE_KEY, 0).edit().putBoolean("Nav Switch", nav).apply();
         getSharedPreferences(PREFERENCE_KEY, 0).edit().putBoolean("Amlogic Mode", useAmlogicMode).apply();
 
@@ -88,7 +74,6 @@ public class SettingsActivity extends Activity {
         intent.putExtra(PlayerActivity.EXTRA_WIDTH, screenWidth);
         intent.putExtra(PlayerActivity.EXTRA_HEIGHT, screenHeight);
         intent.putExtra(PlayerActivity.EXTRA_BITRATE, videoBitrate);
-        intent.putExtra(PlayerActivity.EXTRA_NO_CONTROL, noControl);
         intent.putExtra(PlayerActivity.EXTRA_NAV, nav);
         intent.putExtra(PlayerActivity.EXTRA_AMLOGIC_MODE, useAmlogicMode);
         startActivity(intent);

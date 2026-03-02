@@ -57,10 +57,23 @@
     <string name="menu_clipboard_paste_local">剪贴板：粘贴本机到远端</string>
     <string name="menu_soft_keyboard">输入文本...</string>
 
+    <string name="toast_control_disabled">控制已关闭</string>
+    <string name="toast_not_connected">未连接</string>
+    <string name="toast_clipboard_sync_enabled">剪贴板同步已开启</string>
+    <string name="toast_clipboard_sync_disabled">剪贴板同步已关闭</string>
+    <string name="toast_remote_clipboard_empty">远端剪贴板为空</string>
+    <string name="toast_clipboard_updated">剪贴板已更新</string>
+    <string name="toast_clipboard_pull_failed">拉取剪贴板失败</string>
+    <string name="toast_local_clipboard_empty">本机剪贴板为空</string>
+    <string name="toast_pasted">已粘贴</string>
+    <string name="hint_input_text">请输入文本</string>
+    <string name="toast_server_address_missing">设备地址缺失</string>
+    <string name="toast_failed_load_apps">加载应用失败</string>
+    <string name="toast_failed_start_app">启动应用失败</string>
+
     <string name="launcher_search_hint">搜索应用</string>
     <string name="launcher_icon_desc">应用图标</string>
 
-    <string name="switch0">不控制（仅观看画面）</string>
     <string name="switch1">显示导航键（被控设备没有屏幕导航栏时使用）</string>
     <string name="switch2">Amlogic 设备专用模式</string>
 </resources>
