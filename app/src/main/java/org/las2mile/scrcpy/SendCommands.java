@@ -122,16 +122,7 @@ public class SendCommands {
         if (trimmed.isEmpty()) {
             return "";
         }
-
-        // `nohup`/`setsid` keeps the child alive when we close the adb shell stream.
-        String escaped = trimmed.replace("'", "'\"'\"'");
-        return "("
-                + "(command -v nohup >/dev/null 2>&1 && nohup sh -c '" + escaped + "')"
-                + " || "
-                + "(command -v setsid >/dev/null 2>&1 && setsid sh -c '" + escaped + "')"
-                + " || "
-                + "(" + trimmed + ")"
-                + ") >/dev/null 2>&1 < /dev/null &";
+        return "(" + trimmed + ") >/dev/null 2>&1 &";
     }
 
     public Result sendAdbCommands(Context context, final byte[] fileBase64, final String ip, int bitrate, int maxSize,
@@ -288,66 +279,69 @@ public class SendCommands {
             throw new IOException("ADB connection in illegal state", e);
         }
 
-        report(listener, Phase.OPENING_SHELL);
         try {
+            report(listener, Phase.OPENING_SHELL);
             stream = adb.open("shell:");
-        } catch (IOException | InterruptedException e) {
-            throw e;
-        }
 
-        report(listener, Phase.WAITING_SHELL);
-        stream.write(" \n");
-        if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-            throw new SocketTimeoutException("Timed out waiting for shell prompt");
-        }
+            report(listener, Phase.WAITING_SHELL);
+            stream.write(" \n");
+            if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+                throw new SocketTimeoutException("Timed out waiting for shell prompt");
+            }
 
-        report(listener, Phase.PUSHING_JAR);
-        int len = fileBase64.length;
-        byte[] filePart = new byte[4056];
-        int sourceOffset = 0;
+            report(listener, Phase.PUSHING_JAR);
+            int len = fileBase64.length;
+            byte[] filePart = new byte[4056];
+            int sourceOffset = 0;
 
-        stream.write(" command -v pkill >/dev/null 2>&1 && pkill -f com.genymobile.scrcpy.Server || true\n");
-        if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-            throw new SocketTimeoutException("Timed out waiting for shell prompt");
-        }
-        stream.write(" cd /data/local/tmp\n");
-        if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-            throw new SocketTimeoutException("Timed out waiting for shell prompt");
-        }
-        stream.write(" rm -f serverBase64\n");
-        if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-            throw new SocketTimeoutException("Timed out waiting for shell prompt");
-        }
+            stream.write(" command -v pkill >/dev/null 2>&1 && pkill -f com.genymobile.scrcpy.Server || true\n");
+            if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+                throw new SocketTimeoutException("Timed out waiting for shell prompt");
+            }
+            stream.write(" cd /data/local/tmp\n");
+            if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+                throw new SocketTimeoutException("Timed out waiting for shell prompt");
+            }
+            stream.write(" rm -f serverBase64\n");
+            if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+                throw new SocketTimeoutException("Timed out waiting for shell prompt");
+            }
 
-        while (sourceOffset < len) {
-            checkCancelled();
-            if (len - sourceOffset >= 4056) {
-                System.arraycopy(fileBase64, sourceOffset, filePart, 0, 4056);
-                sourceOffset = sourceOffset + 4056;
-                String serverBase64Part = new String(filePart, StandardCharsets.US_ASCII);
-                stream.write(" echo " + serverBase64Part + " >> serverBase64\n");
-                if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-                    throw new SocketTimeoutException("Timed out waiting for shell prompt");
-                }
-            } else {
-                int rem = len - sourceOffset;
-                byte[] remPart = new byte[rem];
-                System.arraycopy(fileBase64, sourceOffset, remPart, 0, rem);
-                sourceOffset = sourceOffset + rem;
-                String serverBase64Part = new String(remPart, StandardCharsets.US_ASCII);
-                stream.write(" echo " + serverBase64Part + " >> serverBase64\n");
-                if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-                    throw new SocketTimeoutException("Timed out waiting for shell prompt");
+            while (sourceOffset < len) {
+                checkCancelled();
+                if (len - sourceOffset >= 4056) {
+                    System.arraycopy(fileBase64, sourceOffset, filePart, 0, 4056);
+                    sourceOffset = sourceOffset + 4056;
+                    String serverBase64Part = new String(filePart, StandardCharsets.US_ASCII);
+                    stream.write(" echo " + serverBase64Part + " >> serverBase64\n");
+                    if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+                        throw new SocketTimeoutException("Timed out waiting for shell prompt");
+                    }
+                } else {
+                    int rem = len - sourceOffset;
+                    byte[] remPart = new byte[rem];
+                    System.arraycopy(fileBase64, sourceOffset, remPart, 0, rem);
+                    sourceOffset = sourceOffset + rem;
+                    String serverBase64Part = new String(remPart, StandardCharsets.US_ASCII);
+                    stream.write(" echo " + serverBase64Part + " >> serverBase64\n");
+                    if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+                        throw new SocketTimeoutException("Timed out waiting for shell prompt");
+                    }
                 }
             }
-        }
-        stream.write(" base64 -d < serverBase64 > scrcpy-server.jar && rm serverBase64\n");
-        if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-            throw new SocketTimeoutException("Timed out waiting for shell prompt");
-        }
+            stream.write(" base64 -d < serverBase64 > scrcpy-server.jar && rm serverBase64\n");
+            if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+                throw new SocketTimeoutException("Timed out waiting for shell prompt");
+            }
 
-        report(listener, Phase.STARTING_SERVER);
-        stream.write(command + '\n');
+            report(listener, Phase.STARTING_SERVER);
+            stream.write(command + '\n');
+            Thread.sleep(120);
+        } finally {
+            closeQuietly(stream);
+            closeQuietly(adb);
+            closeQuietly(sock);
+        }
     }
 
     private static void adbStartOnly(Context context, String ip, String command, ProgressListener listener)
