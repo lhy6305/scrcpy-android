@@ -24,6 +24,7 @@ import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.util.Base64;
+import android.util.Log;
 import android.util.LruCache;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -136,8 +137,8 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private Runnable streamTimeoutRunnable;
 
-    private Scrcpy scrcpy;
-    private boolean serviceBound = false;
+    private volatile Scrcpy scrcpy;
+    private volatile boolean serviceBound = false;
     private volatile boolean streamingStarted = false;
 
     private int remoteDeviceWidth;
@@ -755,6 +756,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch (Exception e) {
+                Log.e("scrcpy", "Failed to pull remote clipboard", e);
                 runOnUiThread(() -> Toast.makeText(PlayerActivity.this, R.string.toast_clipboard_pull_failed, Toast.LENGTH_SHORT).show());
             }
         });
@@ -981,6 +983,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch (Exception e) {
+                Log.e("scrcpy", "Failed to load launcher app list", e);
                 runOnUiThread(() -> {
                     if (launcherProgress != null) {
                         launcherProgress.setVisibility(View.GONE);
@@ -1199,10 +1202,11 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
     }
 
     private AdbConnection getAdbForTools() {
-        if (!(serviceBound && scrcpy != null && scrcpy.check_socket_connection())) {
+        Scrcpy service = scrcpy;
+        if (!(serviceBound && service != null)) {
             return null;
         }
-        return scrcpy.getAdbConnectionForTools();
+        return service.getAdbConnectionForTools();
     }
 
     private String execAgentWithFallback(String args) throws IOException, InterruptedException {
@@ -1211,6 +1215,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             try {
                 return ApkViewerAgentClient.execAgent(adb, args);
             } catch (IOException ignore) {
+                Log.w("scrcpy", "execAgent via shared ADB failed, fallback to new session: " + ignore.getMessage());
                 // Fall back to a new ADB session for robustness.
             }
         }
@@ -1223,6 +1228,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             try {
                 return ApkViewerAgentClient.exec(adb, command);
             } catch (IOException ignore) {
+                Log.w("scrcpy", "exec shell via shared ADB failed, fallback to new session: " + ignore.getMessage());
                 // Fall back to a new ADB session for robustness.
             }
         }
@@ -1342,6 +1348,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch (Exception e) {
+                Log.e("scrcpy", "Failed to start remote app: " + app.packageName, e);
                 runOnUiThread(() -> Toast.makeText(PlayerActivity.this, R.string.toast_failed_start_app, Toast.LENGTH_SHORT).show());
             }
         });

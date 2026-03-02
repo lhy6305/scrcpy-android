@@ -101,7 +101,7 @@ public class Scrcpy extends Service {
     private final AtomicBoolean letServiceRunning = new AtomicBoolean(true);
     private ServiceCallbacks serviceCallbacks;
     private final int[] remoteDevResolution = new int[2];
-    private boolean socketStatus = false;
+    private volatile boolean socketStatus = false;
     private final AtomicBoolean connectionReported = new AtomicBoolean(false);
     private final LinkedBlockingQueue<byte[]> controlQueue = new LinkedBlockingQueue<>(256);
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
