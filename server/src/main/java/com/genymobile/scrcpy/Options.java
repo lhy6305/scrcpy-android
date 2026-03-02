@@ -66,6 +66,7 @@ public class Options {
     private List<CodecOption> videoCodecOptions;
     private List<CodecOption> audioCodecOptions;
     private boolean amlogicV4l2;
+    private boolean amlogicV4l2Explicit;
     private String amlogicV4l2Device = "/dev/video12";
     private boolean amlogicV4l2DeviceSet;
     private int amlogicV4l2Instance = 1;
@@ -82,6 +83,7 @@ public class Options {
     private int amlogicV4l2CropHeight = 720;
     private int amlogicV4l2ReqBufCount = 4;
     private int amlogicV4l2PixelFormat = AML_V4L2_FMT_NV21; // NV21
+    private boolean amlogicV4l2FallbackDevice;
     private boolean amlogicV4l2CropSet;
 
     private String videoEncoder;
@@ -239,6 +241,10 @@ public class Options {
         return amlogicV4l2;
     }
 
+    public boolean getAmlogicV4l2Explicit() {
+        return amlogicV4l2Explicit;
+    }
+
     public String getAmlogicV4l2Device() {
         return amlogicV4l2Device;
     }
@@ -301,6 +307,10 @@ public class Options {
 
     public int getAmlogicV4l2PixelFormat() {
         return amlogicV4l2PixelFormat;
+    }
+
+    public boolean getAmlogicV4l2FallbackDevice() {
+        return amlogicV4l2FallbackDevice;
     }
 
     public String getAudioEncoder() {
@@ -561,11 +571,15 @@ public class Options {
                             if (amlogicVideoEncoderConfig.pixelFormatSet) {
                                 options.amlogicV4l2PixelFormat = amlogicVideoEncoderConfig.pixelFormat;
                             }
+                            if (amlogicVideoEncoderConfig.fallbackDeviceSet) {
+                                options.amlogicV4l2FallbackDevice = amlogicVideoEncoderConfig.fallbackDevice;
+                            }
                         }
                     }
                     break;
                 case "amlogic_v4l2":
                     amlogicSwitchExplicit = true;
+                    options.amlogicV4l2Explicit = true;
                     options.amlogicV4l2 = Boolean.parseBoolean(value);
                     break;
                 case "amlogic_v4l2_device":
@@ -642,6 +656,9 @@ public class Options {
                     break;
                 case "amlogic_v4l2_format":
                     options.amlogicV4l2PixelFormat = parseAmlogicPixelFormat(value);
+                    break;
+                case "amlogic_v4l2_fallback_device":
+                    options.amlogicV4l2FallbackDevice = Boolean.parseBoolean(value);
                     break;
                 case "audio_encoder":
                     if (!value.isEmpty()) {
@@ -828,6 +845,8 @@ public class Options {
         private int reqBufCount;
         private boolean pixelFormatSet;
         private int pixelFormat;
+        private boolean fallbackDeviceSet;
+        private boolean fallbackDevice;
     }
 
     private static AmlogicVideoEncoderConfig parseAmlogicVideoEncoderConfig(String value) {
@@ -936,6 +955,11 @@ public class Options {
                 case "pixel_format":
                     config.pixelFormat = parseAmlogicPixelFormat(optionValue);
                     config.pixelFormatSet = true;
+                    break;
+                case "fallback":
+                case "fallback_device":
+                    config.fallbackDevice = Boolean.parseBoolean(optionValue);
+                    config.fallbackDeviceSet = true;
                     break;
                 default:
                     Ln.w("Ignoring unsupported amlogic video_encoder option: \"" + key + "\"");

@@ -323,6 +323,39 @@ static bool is_yuv420_family(uint32_t pixel_format) {
     }
 }
 
+static uint32_t align_to_32(uint32_t value) {
+    return (value + 31U) & ~31U;
+}
+
+static uint32_t infer_default_bytes_per_line(uint32_t pixel_format, uint32_t width) {
+    uint32_t aligned_width = align_to_32(width);
+    switch (pixel_format) {
+        case V4L2_PIX_FMT_NV12:
+        case V4L2_PIX_FMT_NV21:
+        case V4L2_PIX_FMT_YVU420:
+            return aligned_width;
+        case V4L2_PIX_FMT_YUYV:
+        case V4L2_PIX_FMT_RGB565:
+        case V4L2_PIX_FMT_RGB555:
+            return aligned_width * 2U;
+        case V4L2_PIX_FMT_RGB24:
+            return aligned_width * 3U;
+        case V4L2_PIX_FMT_RGB32:
+            return aligned_width * 4U;
+        default:
+            return aligned_width;
+    }
+}
+
+static uint32_t resolve_bytes_per_line(uint32_t pixel_format, uint32_t width, uint32_t bytes_per_line) {
+    if (bytes_per_line > 0) {
+        return bytes_per_line;
+    }
+
+    uint32_t inferred = infer_default_bytes_per_line(pixel_format, width);
+    return inferred > 0 ? inferred : width;
+}
+
 static void amlogic_apply_microdimming_yuv420(const uint8_t *src, uint8_t *dst, uint32_t width, uint32_t height, uint32_t bytes_per_line,
                                       uint32_t frame_size) {
     if (!src || !dst || width == 0 || height == 0) {
@@ -378,7 +411,7 @@ static void amlogic_apply_microdimming_yuv420(const uint8_t *src, uint8_t *dst, 
 }
 
 static uint32_t estimate_frame_size_for_format(uint32_t pixel_format, uint32_t width, uint32_t height, uint32_t bytes_per_line) {
-    uint32_t bpl = bytes_per_line > 0 ? bytes_per_line : width;
+    uint32_t bpl = resolve_bytes_per_line(pixel_format, width, bytes_per_line);
     if (bpl == 0 || height == 0) {
         return 0;
     }
@@ -641,11 +674,8 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2CaptureNative_nativeOpen(JNIEnv *env
     ctx->width = fmt.fmt.pix.width;
     ctx->height = fmt.fmt.pix.height;
     ctx->pixel_format = fmt.fmt.pix.pixelformat;
-    ctx->bytes_per_line = fmt.fmt.pix.bytesperline;
+    ctx->bytes_per_line = resolve_bytes_per_line(ctx->pixel_format, ctx->width, fmt.fmt.pix.bytesperline);
     ctx->frame_capacity = fmt.fmt.pix.sizeimage;
-    if (ctx->bytes_per_line == 0) {
-        ctx->bytes_per_line = ctx->width;
-    }
     if (ctx->frame_capacity == 0) {
         ctx->frame_capacity = estimate_frame_size(ctx);
     }
@@ -659,9 +689,7 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2CaptureNative_nativeOpen(JNIEnv *env
     if (fmt.fmt.pix.sizeimage > 0) {
         ctx->frame_capacity = fmt.fmt.pix.sizeimage;
     }
-    if (ctx->bytes_per_line == 0) {
-        ctx->bytes_per_line = ctx->width;
-    }
+    ctx->bytes_per_line = resolve_bytes_per_line(ctx->pixel_format, ctx->width, ctx->bytes_per_line);
     if (ctx->frame_capacity == 0) {
         ctx->frame_capacity = estimate_frame_size(ctx);
     }

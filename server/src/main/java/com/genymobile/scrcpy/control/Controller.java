@@ -99,6 +99,7 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
 
     // Used for resetting video encoding on RESET_VIDEO message
     private SurfaceCapture surfaceCapture;
+    private Runnable videoReset;
 
     public Controller(ControlChannel controlChannel, CleanUp cleanUp, Options options) {
         this.displayId = options.getDisplayId();
@@ -150,6 +151,10 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
 
     public void setSurfaceCapture(SurfaceCapture surfaceCapture) {
         this.surfaceCapture = surfaceCapture;
+    }
+
+    public void setVideoReset(Runnable videoReset) {
+        this.videoReset = videoReset;
     }
 
     private UhidManager getUhidManager() {
@@ -752,6 +757,11 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
         if (surfaceCapture != null) {
             Ln.i("Video capture reset");
             surfaceCapture.requestInvalidate();
+            return;
+        }
+        if (videoReset != null) {
+            Ln.i("Video capture reset");
+            videoReset.run();
         }
     }
 }

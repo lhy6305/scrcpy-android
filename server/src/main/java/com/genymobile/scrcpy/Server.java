@@ -24,6 +24,7 @@ import com.genymobile.scrcpy.video.AmlogicV4l2CaptureProcessor;
 import com.genymobile.scrcpy.video.AmlogicV4l2CaptureNative;
 import com.genymobile.scrcpy.video.SurfaceCapture;
 import com.genymobile.scrcpy.video.SurfaceEncoder;
+import com.genymobile.scrcpy.video.VideoCodec;
 import com.genymobile.scrcpy.video.VideoSource;
 
 import android.annotation.SuppressLint;
@@ -86,9 +87,50 @@ public final class Server {
             }
         }
 
+        int scid = options.getScid();
+        boolean tunnelForward = options.isTunnelForward();
+        boolean control = options.getControl();
+        boolean video = options.getVideo();
+        boolean audio = options.getAudio();
+        boolean sendDummyByte = options.getSendDummyByte();
+        boolean amlogicRequested = options.getAmlogicV4l2();
+        boolean amlogicStrict = amlogicRequested && options.getAmlogicV4l2Explicit();
+        boolean useAmlogicV4l2 = video && amlogicRequested && options.getVideoSource() == VideoSource.DISPLAY;
+
+        if (amlogicRequested && !video) {
+            String msg = "Amlogic V4L2 mode requested but video is disabled";
+            if (amlogicStrict) {
+                Ln.e(msg);
+                throw new ConfigurationException(msg);
+            }
+            Ln.w(msg + ", falling back to the default capture path");
+            useAmlogicV4l2 = false;
+        }
+
+        if (amlogicRequested && options.getVideoSource() != VideoSource.DISPLAY) {
+            String msg = "Amlogic V4L2 mode only supports display source";
+            if (amlogicStrict) {
+                Ln.e(msg);
+                throw new ConfigurationException(msg);
+            }
+            Ln.w(msg + ", falling back to the default capture path");
+            useAmlogicV4l2 = false;
+        }
+
+        VideoCodec videoCodecForStream = options.getVideoCodec();
+        if (useAmlogicV4l2 && videoCodecForStream != VideoCodec.H264) {
+            if (amlogicStrict) {
+                Ln.w("Amlogic V4L2 strict mode forces h264 stream codec (requested: " + videoCodecForStream.getName() + ")");
+                videoCodecForStream = VideoCodec.H264;
+            } else {
+                Ln.w("Amlogic V4L2 mode only supports h264, falling back to the default capture path");
+                useAmlogicV4l2 = false;
+            }
+        }
+
         CleanUp cleanUp = null;
 
-        if (options.getAmlogicV4l2()) {
+        if (useAmlogicV4l2) {
             try {
                 AmlogicV4l2CaptureNative.preload();
             } catch (IOException e) {
@@ -100,13 +142,6 @@ public final class Server {
         if (options.getCleanup()) {
             cleanUp = CleanUp.start(options);
         }
-
-        int scid = options.getScid();
-        boolean tunnelForward = options.isTunnelForward();
-        boolean control = options.getControl();
-        boolean video = options.getVideo();
-        boolean audio = options.getAudio();
-        boolean sendDummyByte = options.getSendDummyByte();
 
         Workarounds.apply();
 
@@ -148,11 +183,14 @@ public final class Server {
             }
 
             if (video) {
-                Streamer videoStreamer = new Streamer(connection.getVideoFd(), options.getVideoCodec(), options.getSendCodecMeta(),
+                Streamer videoStreamer = new Streamer(connection.getVideoFd(), videoCodecForStream, options.getSendCodecMeta(),
                         options.getSendFrameMeta());
-                if (options.getAmlogicV4l2() && options.getVideoSource() == VideoSource.DISPLAY) {
-                    AsyncProcessor videoProcessor = new AmlogicV4l2CaptureProcessor(videoStreamer, options);
+                if (useAmlogicV4l2) {
+                    AmlogicV4l2CaptureProcessor videoProcessor = new AmlogicV4l2CaptureProcessor(videoStreamer, options);
                     asyncProcessors.add(videoProcessor);
+                    if (controller != null) {
+                        controller.setVideoReset(videoProcessor::requestReset);
+                    }
                 } else {
                     SurfaceCapture surfaceCapture;
                     if (options.getVideoSource() == VideoSource.DISPLAY) {
@@ -171,6 +209,7 @@ public final class Server {
 
                     if (controller != null) {
                         controller.setSurfaceCapture(surfaceCapture);
+                        controller.setVideoReset(null);
                     }
                 }
             }

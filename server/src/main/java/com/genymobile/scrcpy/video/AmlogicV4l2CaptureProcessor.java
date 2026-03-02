@@ -30,6 +30,7 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
     private final Streamer streamer;
     private final Options options;
     private final AtomicBoolean stopped = new AtomicBoolean();
+    private final AtomicBoolean resetRequested = new AtomicBoolean();
 
     private Thread thread;
 
@@ -39,36 +40,49 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
     }
 
     private void streamCapture() throws IOException, ConfigurationException {
-        if (options.getVideoCodec() != VideoCodec.H264) {
-            throw new ConfigurationException("Amlogic V4L2 dedicated mode supports only h264");
-        }
-
         List<String> devicePaths = resolveDevicePaths(options);
-        IOException lastOpenError = null;
-        for (int i = 0; i < devicePaths.size(); ++i) {
-            String devicePath = devicePaths.get(i);
-            Ln.i("Trying Amlogic V4L2 device: " + devicePath + " (candidate " + (i + 1) + "/" + devicePaths.size() + ")");
-            try {
-                streamCaptureFromDevice(devicePath);
-                return;
-            } catch (IOException e) {
-                if (stopped.get() || isBrokenPipe(e)) {
-                    Ln.d("Amlogic V4L2 stream closed: " + e.getMessage());
+        Ln.i("Amlogic V4L2 device fallback " + (options.getAmlogicV4l2FallbackDevice() ? "enabled" : "disabled")
+                + ", candidates=" + devicePaths);
+        while (!stopped.get()) {
+            IOException lastOpenError = null;
+            boolean reset = false;
+            for (int i = 0; i < devicePaths.size(); ++i) {
+                String devicePath = devicePaths.get(i);
+                Ln.i("Trying Amlogic V4L2 device: " + devicePath + " (candidate " + (i + 1) + "/" + devicePaths.size() + ")");
+                try {
+                    streamCaptureFromDevice(devicePath);
+                    if (stopped.get()) {
+                        return;
+                    }
+                    if (resetRequested.getAndSet(false)) {
+                        Ln.i("Amlogic V4L2 video reset requested");
+                        reset = true;
+                        break;
+                    }
                     return;
-                }
-                lastOpenError = e;
-                if (i + 1 < devicePaths.size()) {
-                    Ln.w("Failed to open Amlogic V4L2 device " + devicePath + ": " + e.getMessage() + ". Trying fallback device.");
-                } else {
-                    Ln.e("Failed to open Amlogic V4L2 device " + devicePath + ": " + e.getMessage());
+                } catch (IOException e) {
+                    if (stopped.get() || isBrokenPipe(e)) {
+                        Ln.d("Amlogic V4L2 stream closed: " + e.getMessage());
+                        return;
+                    }
+                    lastOpenError = e;
+                    if (i + 1 < devicePaths.size()) {
+                        Ln.w("Failed to open Amlogic V4L2 device " + devicePath + ": " + e.getMessage() + ". Trying next candidate.");
+                    } else {
+                        Ln.e("Failed to open Amlogic V4L2 device " + devicePath + ": " + e.getMessage());
+                    }
                 }
             }
-        }
 
-        if (lastOpenError != null) {
-            throw lastOpenError;
+            if (reset) {
+                continue;
+            }
+
+            if (lastOpenError != null) {
+                throw lastOpenError;
+            }
+            throw new IOException("No available Amlogic V4L2 device candidates");
         }
-        throw new IOException("No available Amlogic V4L2 device candidates");
     }
 
     private void streamCaptureFromDevice(String devicePath) throws IOException, ConfigurationException {
@@ -100,7 +114,7 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
         AmlogicV4l2CaptureNative.FrameMetadata metadata = new AmlogicV4l2CaptureNative.FrameMetadata();
         boolean configSent = false;
 
-        while (!stopped.get()) {
+        while (!stopped.get() && !resetRequested.get()) {
             frameBuffer.clear();
             int packetSize = capture.readFrame(frameBuffer, metadata);
             if (packetSize == AmlogicV4l2CaptureNative.EAGAIN) {
@@ -175,7 +189,7 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
             int statZero = 0;
             int statPositive = 0;
 
-            while (!stopped.get()) {
+            while (!stopped.get() && !resetRequested.get()) {
                 rawFrameBuffer.clear();
                 int rawSize = capture.readFrame(rawFrameBuffer, metadata);
                 if (rawSize == AmlogicV4l2CaptureNative.EAGAIN) {
@@ -240,6 +254,9 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
 
     private void drainEncoder(MediaCodec codec, MediaCodec.BufferInfo bufferInfo, int[] outputDebugCount) throws IOException {
         while (true) {
+            if (stopped.get() || resetRequested.get()) {
+                return;
+            }
             int outputIndex = codec.dequeueOutputBuffer(bufferInfo, 0);
             if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
                 return;
@@ -817,6 +834,11 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
     @Override
     public void stop() {
         stopped.set(true);
+        resetRequested.set(true);
+    }
+
+    public void requestReset() {
+        resetRequested.set(true);
     }
 
     @Override
@@ -935,12 +957,13 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
     }
 
     private static List<String> resolveDevicePaths(Options options) throws ConfigurationException {
+        boolean allowFallbackDevice = options.getAmlogicV4l2FallbackDevice();
         int preferredInstance = options.getAmlogicV4l2Instance();
         int fallbackInstance = preferredInstance == 0 ? 1 : 0;
         String preferredPath = resolveDevicePath(preferredInstance);
         String fallbackPath = resolveDevicePath(fallbackInstance);
 
-        List<String> candidates = new ArrayList<>(3);
+        List<String> candidates = new ArrayList<>(allowFallbackDevice ? 3 : 2);
         if (options.getAmlogicV4l2DeviceSet()) {
             String explicitPath = options.getAmlogicV4l2Device();
             if (explicitPath != null) {
@@ -948,12 +971,15 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
             }
             if (explicitPath != null && !explicitPath.isEmpty()) {
                 candidates.add(explicitPath);
+                if (!allowFallbackDevice) {
+                    return candidates;
+                }
             }
         }
         if (!candidates.contains(preferredPath)) {
             candidates.add(preferredPath);
         }
-        if (!candidates.contains(fallbackPath)) {
+        if (allowFallbackDevice && !candidates.contains(fallbackPath)) {
             candidates.add(fallbackPath);
         }
         return candidates;
