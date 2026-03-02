@@ -10,6 +10,7 @@ import com.genymobile.scrcpy.device.DisplayInfo;
 import com.genymobile.scrcpy.device.Point;
 import com.genymobile.scrcpy.device.Position;
 import com.genymobile.scrcpy.device.Size;
+import com.genymobile.scrcpy.util.IO;
 import com.genymobile.scrcpy.util.Ln;
 import com.genymobile.scrcpy.util.LogUtils;
 import com.genymobile.scrcpy.video.SurfaceCapture;
@@ -336,6 +337,9 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
             case ControlMessage.TYPE_RESET_VIDEO:
                 resetVideo();
                 break;
+            case ControlMessage.TYPE_EXEC_SHELL:
+                execShellAndReply(msg.getSequence(), msg.getText());
+                break;
             default:
                 // do nothing
         }
@@ -620,6 +624,39 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
     private void openHardKeyboardSettings() {
         Intent intent = new Intent("android.settings.HARD_KEYBOARD_SETTINGS");
         ServiceManager.getActivityManager().startActivity(intent);
+    }
+
+    private void execShellAndReply(long sequence, String command) {
+        String output;
+        try {
+            output = execShell(command);
+        } catch (IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            String msg = e.getMessage();
+            output = "ERROR|" + e.getClass().getSimpleName() + (msg != null && !msg.isEmpty() ? (": " + msg) : "");
+        }
+        DeviceMessage response = DeviceMessage.createExecShellResult(sequence, output != null ? output : "");
+        sender.send(response);
+    }
+
+    private static String execShell(String command) throws IOException, InterruptedException {
+        ProcessBuilder pb = new ProcessBuilder("sh", "-c", command);
+        pb.redirectErrorStream(true);
+        Process process = pb.start();
+        String output = IO.toString(process.getInputStream());
+        int exitCode = process.waitFor();
+        if (exitCode != 0) {
+            if (output == null) {
+                output = "";
+            }
+            if (!output.endsWith("\n") && !output.isEmpty()) {
+                output += '\n';
+            }
+            output += "EXIT|" + exitCode + '\n';
+        }
+        return output != null ? output : "";
     }
 
     private boolean injectKeyEvent(int action, int keyCode, int repeat, int metaState, int injectMode) {

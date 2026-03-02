@@ -43,6 +43,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
+import java.util.HashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -60,13 +61,18 @@ public class Scrcpy extends Service {
     private static final int CONTROL_MSG_TYPE_INJECT_TEXT = 1;
     private static final int CONTROL_MSG_TYPE_INJECT_TOUCH_EVENT = 2;
     private static final int CONTROL_MSG_TYPE_SET_CLIPBOARD = 9;
+    private static final int CONTROL_MSG_TYPE_EXEC_SHELL = 18;
 
     private static final int DEVICE_MSG_TYPE_CLIPBOARD = 0;
     private static final int DEVICE_MSG_TYPE_ACK_CLIPBOARD = 1;
     private static final int DEVICE_MSG_TYPE_UHID_OUTPUT = 2;
+    private static final int DEVICE_MSG_TYPE_EXEC_SHELL_RESULT = 3;
 
     private static final int CONTROL_CLIPBOARD_TEXT_MAX_LENGTH = (1 << 18) - 14;
     private static final int DEVICE_CLIPBOARD_TEXT_MAX_LENGTH = (1 << 18) - 5;
+    private static final int CONTROL_EXEC_SHELL_TEXT_MAX_LENGTH = (1 << 18) - 13;
+    private static final int DEVICE_EXEC_SHELL_RESULT_MAX_LENGTH = (1 << 18) - 13;
+    private static final long CONTROL_EXEC_SHELL_TIMEOUT_MS = 20_000L;
 
     private static final int VIDEO_CODEC_H264 = 0x68_32_36_34;
     private static final int VIDEO_CODEC_H265 = 0x68_32_36_35;
@@ -107,6 +113,9 @@ public class Scrcpy extends Service {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicReference<String> lastRemoteClipboardText = new AtomicReference<>();
     private final AtomicLong clipboardSequence = new AtomicLong(1);
+    private final AtomicLong execShellSequence = new AtomicLong(1);
+    private final Object execShellResultLock = new Object();
+    private final HashMap<Long, String> execShellResults = new HashMap<>();
     private volatile boolean clipboardSyncEnabled = true;
     private volatile int streamWidth;
     private volatile int streamHeight;
@@ -242,6 +251,31 @@ public class Scrcpy extends Service {
             return;
         }
         enqueueControlMessage(buildSetClipboardControlMessage(clipboardSequence.getAndIncrement(), text, paste));
+    }
+
+    public String execShellViaControl(String command) throws IOException, InterruptedException {
+        if (command == null) {
+            throw new IOException("command is null");
+        }
+        if (!socketStatus || !letServiceRunning.get()) {
+            throw new IOException("Control channel unavailable");
+        }
+
+        long sequence = execShellSequence.getAndIncrement();
+        synchronized (execShellResultLock) {
+            execShellResults.remove(sequence);
+        }
+
+        enqueueControlMessage(buildExecShellControlMessage(sequence, command));
+        return waitExecShellResult(sequence, CONTROL_EXEC_SHELL_TIMEOUT_MS);
+    }
+
+    public String execAgentViaControl(String args) throws IOException, InterruptedException {
+        if (args == null) {
+            throw new IOException("args is null");
+        }
+        String command = "CLASSPATH=/data/local/tmp/apkviewer-agent.jar app_process / org.las2mile.apkviewer.AgentMain " + args;
+        return execShellViaControl(command);
     }
 
     public void setClipboardSyncEnabled(boolean enabled) {
@@ -532,6 +566,9 @@ public class Scrcpy extends Service {
                             controlInputStream.readUnsignedShort();
                             int size = controlInputStream.readUnsignedShort();
                             skipFully(controlInputStream, size);
+                            break;
+                        case DEVICE_MSG_TYPE_EXEC_SHELL_RESULT:
+                            readExecShellResult(controlInputStream);
                             break;
                         default:
                             throw new IOException("Unknown device message type: " + type);
@@ -838,6 +875,12 @@ public class Scrcpy extends Service {
         if (previous == connected) {
             return;
         }
+        if (!connected) {
+            synchronized (execShellResultLock) {
+                execShellResults.clear();
+                execShellResultLock.notifyAll();
+            }
+        }
         ServiceCallbacks callbacks = serviceCallbacks;
         if (callbacks != null) {
             mainHandler.post(() -> callbacks.onConnectionStateChanged(connected));
@@ -1032,6 +1075,42 @@ public class Scrcpy extends Service {
         applyRemoteClipboard(text);
     }
 
+    private void readExecShellResult(DataInputStream controlInputStream) throws IOException {
+        long sequence = controlInputStream.readLong();
+        int len = controlInputStream.readInt();
+        if (len < 0 || len > DEVICE_EXEC_SHELL_RESULT_MAX_LENGTH) {
+            throw new IOException("Invalid exec shell result length: " + len);
+        }
+
+        byte[] data = new byte[len];
+        controlInputStream.readFully(data);
+        String output = new String(data, StandardCharsets.UTF_8);
+        synchronized (execShellResultLock) {
+            execShellResults.put(sequence, output);
+            execShellResultLock.notifyAll();
+        }
+    }
+
+    private String waitExecShellResult(long sequence, long timeoutMs) throws IOException, InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        synchronized (execShellResultLock) {
+            while (true) {
+                String output = execShellResults.remove(sequence);
+                if (output != null) {
+                    return output;
+                }
+                if (!letServiceRunning.get() || !socketStatus) {
+                    throw new IOException("Control channel disconnected");
+                }
+                long waitMs = deadline - System.currentTimeMillis();
+                if (waitMs <= 0) {
+                    throw new IOException("Timed out waiting for control shell result");
+                }
+                execShellResultLock.wait(waitMs);
+            }
+        }
+    }
+
     private void applyRemoteClipboard(String text) {
         lastRemoteClipboardText.set(text);
         if (!clipboardSyncEnabled) {
@@ -1146,6 +1225,16 @@ public class Scrcpy extends Service {
         msg[9] = (byte) (paste ? 1 : 0);
         writeIntBE(msg, 10, raw.length);
         System.arraycopy(raw, 0, msg, 14, raw.length);
+        return msg;
+    }
+
+    private static byte[] buildExecShellControlMessage(long sequence, String command) {
+        byte[] raw = getClippedUtf8(command, CONTROL_EXEC_SHELL_TEXT_MAX_LENGTH);
+        byte[] msg = new byte[13 + raw.length];
+        msg[0] = CONTROL_MSG_TYPE_EXEC_SHELL;
+        writeLongBE(msg, 1, sequence);
+        writeIntBE(msg, 9, raw.length);
+        System.arraycopy(raw, 0, msg, 13, raw.length);
         return msg;
     }
 

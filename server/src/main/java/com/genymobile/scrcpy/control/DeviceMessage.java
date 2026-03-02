@@ -5,6 +5,7 @@ public final class DeviceMessage {
     public static final int TYPE_CLIPBOARD = 0;
     public static final int TYPE_ACK_CLIPBOARD = 1;
     public static final int TYPE_UHID_OUTPUT = 2;
+    public static final int TYPE_EXEC_SHELL_RESULT = 3;
 
     private int type;
     private String text;
@@ -34,6 +35,14 @@ public final class DeviceMessage {
         event.type = TYPE_UHID_OUTPUT;
         event.id = id;
         event.data = data;
+        return event;
+    }
+
+    public static DeviceMessage createExecShellResult(long sequence, String output) {
+        DeviceMessage event = new DeviceMessage();
+        event.type = TYPE_EXEC_SHELL_RESULT;
+        event.sequence = sequence;
+        event.text = output;
         return event;
     }
 

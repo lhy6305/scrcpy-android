@@ -56,6 +56,8 @@ public class ControlMessageReader {
                 return parseUhidDestroy();
             case ControlMessage.TYPE_START_APP:
                 return parseStartApp();
+            case ControlMessage.TYPE_EXEC_SHELL:
+                return parseExecShell();
             default:
                 throw new ControlProtocolException("Unknown event type: " + type);
         }
@@ -164,6 +166,12 @@ public class ControlMessageReader {
     private ControlMessage parseStartApp() throws IOException {
         String name = parseString(1);
         return ControlMessage.createStartApp(name);
+    }
+
+    private ControlMessage parseExecShell() throws IOException {
+        long sequence = dis.readLong();
+        String command = parseString();
+        return ControlMessage.createExecShell(sequence, command);
     }
 
     private Position parsePosition() throws IOException {

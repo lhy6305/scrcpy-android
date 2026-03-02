@@ -12,6 +12,7 @@ public class DeviceMessageWriter {
 
     private static final int MESSAGE_MAX_SIZE = 1 << 18; // 256k
     public static final int CLIPBOARD_TEXT_MAX_LENGTH = MESSAGE_MAX_SIZE - 5; // type: 1 byte; length: 4 bytes
+    public static final int EXEC_SHELL_OUTPUT_MAX_LENGTH = MESSAGE_MAX_SIZE - 13; // type: 1 byte; sequence: 8 bytes; length: 4 bytes
 
     private final DataOutputStream dos;
 
@@ -38,6 +39,14 @@ public class DeviceMessageWriter {
                 byte[] data = msg.getData();
                 dos.writeShort(data.length);
                 dos.write(data);
+                break;
+            case DeviceMessage.TYPE_EXEC_SHELL_RESULT:
+                dos.writeLong(msg.getSequence());
+                String output = msg.getText();
+                byte[] rawOutput = output.getBytes(StandardCharsets.UTF_8);
+                int outputLen = StringUtils.getUtf8TruncationIndex(rawOutput, EXEC_SHELL_OUTPUT_MAX_LENGTH);
+                dos.writeInt(outputLen);
+                dos.write(rawOutput, 0, outputLen);
                 break;
             default:
                 throw new ControlProtocolException("Unknown event type: " + type);

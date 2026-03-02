@@ -1096,7 +1096,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         launcherIconFuture = launcherExecutor.submit(() -> {
             try {
                 ensureAgentDeployed();
-                final int batchSize = 12;
+                final int batchSize = 4;
                 for (int i = 0; i < pkgs.size(); i += batchSize) {
                     checkCancelled();
                     int j = Math.min(pkgs.size(), i + batchSize);
@@ -1221,15 +1221,44 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
                 // Fall back to a new ADB session for robustness.
             }
         }
+        IOException fallbackError = null;
         try {
             return ApkViewerAgentClient.execAgent(this, serverAdr, args);
         } catch (IOException e) {
-            if (sharedError != null) {
-                throw new IOException(
-                        "shared adb failed: " + briefError(sharedError) + "; fallback adb failed: " + briefError(e), e);
-            }
-            throw e;
+            fallbackError = e;
         }
+
+        IOException controlError = null;
+        try {
+            return execAgentViaControl(args);
+        } catch (IOException e) {
+            controlError = e;
+        }
+
+        if (sharedError != null) {
+            if (controlError != null) {
+                throw new IOException(
+                        "shared adb failed: " + briefError(sharedError)
+                                + "; fallback adb failed: " + briefError(fallbackError)
+                                + "; control failed: " + briefError(controlError),
+                        controlError);
+            }
+            throw new IOException(
+                    "shared adb failed: " + briefError(sharedError) + "; fallback adb failed: " + briefError(fallbackError),
+                    fallbackError);
+        }
+        if (fallbackError != null) {
+            if (controlError != null) {
+                throw new IOException(
+                        "fallback adb failed: " + briefError(fallbackError) + "; control failed: " + briefError(controlError),
+                        controlError);
+            }
+            throw fallbackError;
+        }
+        if (controlError != null) {
+            throw controlError;
+        }
+        throw new IOException("No execution path available");
     }
 
     private String execShellWithFallback(String command) throws IOException, InterruptedException {
@@ -1244,15 +1273,44 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
                 // Fall back to a new ADB session for robustness.
             }
         }
+        IOException fallbackError = null;
         try {
             return ApkViewerAgentClient.exec(this, serverAdr, command);
         } catch (IOException e) {
-            if (sharedError != null) {
-                throw new IOException(
-                        "shared adb failed: " + briefError(sharedError) + "; fallback adb failed: " + briefError(e), e);
-            }
-            throw e;
+            fallbackError = e;
         }
+
+        IOException controlError = null;
+        try {
+            return execShellViaControl(command);
+        } catch (IOException e) {
+            controlError = e;
+        }
+
+        if (sharedError != null) {
+            if (controlError != null) {
+                throw new IOException(
+                        "shared adb failed: " + briefError(sharedError)
+                                + "; fallback adb failed: " + briefError(fallbackError)
+                                + "; control failed: " + briefError(controlError),
+                        controlError);
+            }
+            throw new IOException(
+                    "shared adb failed: " + briefError(sharedError) + "; fallback adb failed: " + briefError(fallbackError),
+                    fallbackError);
+        }
+        if (fallbackError != null) {
+            if (controlError != null) {
+                throw new IOException(
+                        "fallback adb failed: " + briefError(fallbackError) + "; control failed: " + briefError(controlError),
+                        controlError);
+            }
+            throw fallbackError;
+        }
+        if (controlError != null) {
+            throw controlError;
+        }
+        throw new IOException("No execution path available");
     }
 
     private String execAgentWithSharedRetry(AdbConnection adb, String args) throws IOException, InterruptedException {
@@ -1301,6 +1359,22 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         return lower.contains("stream open actively rejected")
                 || lower.contains("stream closed")
                 || lower.contains("stream open rejected");
+    }
+
+    private String execAgentViaControl(String args) throws IOException, InterruptedException {
+        Scrcpy service = scrcpy;
+        if (!(serviceBound && service != null && service.check_socket_connection())) {
+            throw new IOException("Control channel unavailable");
+        }
+        return service.execAgentViaControl(args);
+    }
+
+    private String execShellViaControl(String command) throws IOException, InterruptedException {
+        Scrcpy service = scrcpy;
+        if (!(serviceBound && service != null && service.check_socket_connection())) {
+            throw new IOException("Control channel unavailable");
+        }
+        return service.execShellViaControl(command);
     }
 
     private static String briefError(Throwable e) {

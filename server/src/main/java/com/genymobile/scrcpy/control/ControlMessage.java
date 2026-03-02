@@ -25,6 +25,7 @@ public final class ControlMessage {
     public static final int TYPE_OPEN_HARD_KEYBOARD_SETTINGS = 15;
     public static final int TYPE_START_APP = 16;
     public static final int TYPE_RESET_VIDEO = 17;
+    public static final int TYPE_EXEC_SHELL = 18;
 
     public static final long SEQUENCE_INVALID = 0;
 
@@ -163,6 +164,14 @@ public final class ControlMessage {
         ControlMessage msg = new ControlMessage();
         msg.type = TYPE_START_APP;
         msg.text = name;
+        return msg;
+    }
+
+    public static ControlMessage createExecShell(long sequence, String command) {
+        ControlMessage msg = new ControlMessage();
+        msg.type = TYPE_EXEC_SHELL;
+        msg.sequence = sequence;
+        msg.text = command;
         return msg;
     }
 
