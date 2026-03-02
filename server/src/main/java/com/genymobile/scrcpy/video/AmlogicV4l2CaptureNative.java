@@ -15,7 +15,7 @@ import java.nio.ByteBuffer;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
-public final class AmlogicV4l2Native implements Closeable {
+public final class AmlogicV4l2CaptureNative implements Closeable {
 
     public static final long FLAG_KEY_FRAME = 1L;
     public static final int PIXEL_FORMAT_H264 = 875967048;
@@ -29,7 +29,7 @@ public final class AmlogicV4l2Native implements Closeable {
     public static final int PIXEL_FORMAT_RGBR = 1380075346;
     public static final int EAGAIN = -11;
 
-    private static final String LIB_NAME = "scrcpy_v4l2";
+    private static final String LIB_NAME = "amlogic_scrcpy_v4l2";
     private static final String LIB_FILE = "lib" + LIB_NAME + ".so";
     private static volatile boolean libraryLoaded;
 
@@ -46,7 +46,7 @@ public final class AmlogicV4l2Native implements Closeable {
         public int bufferIndex = -1;
     }
 
-    private AmlogicV4l2Native(long handle, Size size, int frameCapacity, int pixelFormat, int bytesPerLine) {
+    private AmlogicV4l2CaptureNative(long handle, Size size, int frameCapacity, int pixelFormat, int bytesPerLine) {
         this.handle = handle;
         this.size = size;
         this.frameCapacity = frameCapacity;
@@ -58,7 +58,7 @@ public final class AmlogicV4l2Native implements Closeable {
         ensureLibraryLoaded();
     }
 
-    public static AmlogicV4l2Native open(String devicePath, int width, int height, int fps, int portType, int sourceType,
+    public static AmlogicV4l2CaptureNative open(String devicePath, int width, int height, int fps, int portType, int sourceType,
             int mode, int rotation, int cropLeft, int cropTop, int cropWidth, int cropHeight, int reqBufCount,
             int preferredPixelFormat) throws IOException {
         ensureLibraryLoaded();
@@ -72,7 +72,7 @@ public final class AmlogicV4l2Native implements Closeable {
         int capacity = (int) openInfo[2];
         int pixelFormat = (int) openInfo[3];
         int bytesPerLine = (int) openInfo[4];
-        return new AmlogicV4l2Native(handle, size, capacity, pixelFormat, bytesPerLine);
+        return new AmlogicV4l2CaptureNative(handle, size, capacity, pixelFormat, bytesPerLine);
     }
 
     public Size getSize() {
@@ -158,7 +158,7 @@ public final class AmlogicV4l2Native implements Closeable {
                     continue;
                 }
 
-                File outFile = new File("/data/local/tmp", "libscrcpy_v4l2-" + abi + ".so");
+                File outFile = new File("/data/local/tmp", "libamlogic_scrcpy_v4l2-" + abi + ".so");
                 try (InputStream in = zipFile.getInputStream(entry);
                      FileOutputStream out = new FileOutputStream(outFile, false)) {
                     byte[] buffer = new byte[16384];

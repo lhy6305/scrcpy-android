@@ -44,6 +44,7 @@ import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
+import java.security.SecureRandom;
 import java.util.Enumeration;
 
 
@@ -77,6 +78,8 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
     private int lastRemoteOrientation = REMOTE_ORIENTATION_UNKNOWN;
     private static boolean no_control = false;
     private static boolean use_amlogic_mode = false;
+    private int sessionScid = -1;
+    private static final SecureRandom SCID_RANDOM = new SecureRandom();
 
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
@@ -85,7 +88,7 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
             scrcpy.setServiceCallbacks(MainActivity.this);
             serviceBound = true;
            if (first_time) {
-                scrcpy.start(surface, serverAdr, screenHeight, screenWidth);
+                scrcpy.start(surface, serverAdr, screenHeight, screenWidth, sessionScid);
                int count = 100;
                while (count!=0 && !scrcpy.check_socket_connection()){
                    count --;
@@ -164,8 +167,9 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
             local_ip = wifiIpAddress();
             getAttributes();
             if (!serverAdr.isEmpty()) {
+                sessionScid = generateScid();
                 if (sendCommands.SendAdbCommands(context, fileBase64, serverAdr, local_ip, videoBitrate, Math.max(screenHeight, screenWidth),
-                        screenWidth, screenHeight, use_amlogic_mode) == 0) {
+                        screenWidth, screenHeight, use_amlogic_mode, sessionScid) == 0) {
                     start_screen_copy_magic();
                 } else {
                     Toast.makeText(context, "Network OR ADB connection failed", Toast.LENGTH_SHORT).show();
@@ -452,6 +456,10 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
             ex.printStackTrace();
         }
         return null;
+    }
+
+    private static int generateScid() {
+        return SCID_RANDOM.nextInt() & 0x7fffffff;
     }
 
 

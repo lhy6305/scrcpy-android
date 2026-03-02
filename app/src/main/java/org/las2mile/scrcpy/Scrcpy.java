@@ -26,15 +26,23 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.Surface;
 
+import com.tananaev.adblib.AdbConnection;
+import com.tananaev.adblib.AdbCrypto;
+import com.tananaev.adblib.AdbStream;
+
 import org.las2mile.scrcpy.decoder.VideoDecoder;
 
+import java.io.Closeable;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
-import java.net.Socket;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.NoSuchAlgorithmException;
+import java.security.spec.InvalidKeySpecException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -45,9 +53,8 @@ public class Scrcpy extends Service {
 
     private static final long PACKET_FLAG_CONFIG = 1L << 63;
     private static final long PACKET_FLAG_KEY_FRAME = 1L << 62;
-    private static final int VIDEO_PORT = 7007;
-    private static final int CONTROL_PORT = 7008;
-    private static final int AUDIO_PORT = 7009;
+    private static final int DEVICE_NAME_FIELD_LENGTH = 64;
+    private static final String SOCKET_NAME_PREFIX = "scrcpy";
 
     private static final int CONTROL_MSG_TYPE_INJECT_KEYCODE = 0;
     private static final int CONTROL_MSG_TYPE_INJECT_TOUCH_EVENT = 2;
@@ -83,6 +90,7 @@ public class Scrcpy extends Service {
     private static final int MJPEG_PACKET_HEADER_BYTES = 8;
 
     private String serverAdr;
+    private int scid = -1;
     private volatile Surface surface;
     private int screenWidth;
     private int screenHeight;
@@ -125,11 +133,13 @@ public class Scrcpy extends Service {
         updateAvailable.set(true);
     }
 
-    public void start(Surface surface, String serverAdr, int screenHeight, int screenWidth) {
+    public void start(Surface surface, String serverAdr, int screenHeight, int screenWidth, int scid) {
         letServiceRunning.set(true);
         registerClipboardSync();
         this.videoDecoder = null;
         this.serverAdr = serverAdr;
+        this.scid = scid;
+        this.socketStatus = false;
         this.screenHeight = screenHeight;
         this.screenWidth = screenWidth;
         this.surface = surface;
@@ -202,21 +212,36 @@ public class Scrcpy extends Service {
     private void startConnection() {
         int attempts = 50;
         while (attempts != 0 && letServiceRunning.get()) {
-            Socket videoSocket = null;
-            Socket audioSocket = null;
-            Socket controlSocket = null;
+            AdbConnection adbConnection = null;
+            AdbStream videoStream = null;
+            AdbStream audioStream = null;
+            AdbStream controlStream = null;
+            DataInputStream videoInputStream = null;
+            DataInputStream audioInputStream = null;
+            DataInputStream controlInputStream = null;
+            DataOutputStream controlOutputStream = null;
             Thread controlSender = null;
             Thread controlReceiver = null;
             Thread audioReceiver = null;
             try {
-                videoSocket = new Socket(serverAdr, VIDEO_PORT);
-                audioSocket = new Socket(serverAdr, AUDIO_PORT);
-                controlSocket = new Socket(serverAdr, CONTROL_PORT);
+                adbConnection = openAdbConnection(serverAdr);
+                String socketService = "localabstract:" + getSocketName(scid);
 
-                DataInputStream videoInputStream = new DataInputStream(videoSocket.getInputStream());
-                DataInputStream audioInputStream = new DataInputStream(audioSocket.getInputStream());
-                DataInputStream controlInputStream = new DataInputStream(controlSocket.getInputStream());
-                DataOutputStream controlOutputStream = new DataOutputStream(controlSocket.getOutputStream());
+                videoStream = adbConnection.open(socketService);
+                videoInputStream = new DataInputStream(new AdbStreamInputStream(videoStream));
+                int dummyByte = videoInputStream.read();
+                if (dummyByte == -1) {
+                    throw new EOFException("Could not read dummy byte from video stream");
+                }
+
+                audioStream = adbConnection.open(socketService);
+                audioInputStream = new DataInputStream(new AdbStreamInputStream(audioStream));
+
+                controlStream = adbConnection.open(socketService);
+                controlInputStream = new DataInputStream(new AdbStreamInputStream(controlStream));
+                controlOutputStream = new DataOutputStream(new AdbStreamOutputStream(controlStream));
+
+                readDeviceMeta(videoInputStream);
 
                 controlSender = startControlSender(controlOutputStream);
                 controlReceiver = startControlReceiver(controlInputStream);
@@ -300,28 +325,106 @@ public class Scrcpy extends Service {
                 }
             } catch (EOFException e) {
                 Log.i("scrcpy", "Connection closed");
+                if (attempts == 0) {
+                    break;
+                }
+                attempts--;
+                if (attempts == 0) {
+                    socketStatus = false;
+                    return;
+                }
+                sleepBeforeRetry();
             } catch (IOException e) {
                 attempts--;
                 if (attempts == 0) {
                     socketStatus = false;
                     return;
                 }
-                try {
-                    Thread.sleep(100);
-                } catch (InterruptedException ignore) {
-                    Thread.currentThread().interrupt();
-                }
+                sleepBeforeRetry();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
             } finally {
                 stopThread(controlSender);
                 stopThread(controlReceiver);
                 stopThread(audioReceiver);
-                closeSocket(controlSocket);
-                closeSocket(audioSocket);
-                closeSocket(videoSocket);
+                closeQuietly(controlOutputStream);
+                closeQuietly(controlInputStream);
+                closeQuietly(audioInputStream);
+                closeQuietly(videoInputStream);
+                closeQuietly(controlStream);
+                closeQuietly(audioStream);
+                closeQuietly(videoStream);
+                closeQuietly(adbConnection);
                 joinThread(controlSender);
                 joinThread(controlReceiver);
                 joinThread(audioReceiver);
             }
+        }
+        socketStatus = false;
+    }
+
+    private AdbConnection openAdbConnection(String host) throws IOException, InterruptedException {
+        AdbCrypto crypto = setupCrypto();
+        java.net.Socket socket = new java.net.Socket(host, 5555);
+        try {
+            AdbConnection connection = AdbConnection.create(socket, crypto);
+            connection.connect();
+            return connection;
+        } catch (IOException | InterruptedException e) {
+            try {
+                socket.close();
+            } catch (IOException ignore) {
+                // ignore
+            }
+            throw e;
+        }
+    }
+
+    private AdbCrypto setupCrypto() throws IOException {
+        AdbCrypto crypto;
+        try {
+            crypto = AdbCrypto.loadAdbKeyPair(SendCommands.getBase64Impl(), getFileStreamPath("priv.key"), getFileStreamPath("pub.key"));
+        } catch (IOException | InvalidKeySpecException | NoSuchAlgorithmException | NullPointerException e) {
+            crypto = null;
+        }
+
+        if (crypto == null) {
+            try {
+                crypto = AdbCrypto.generateAdbKeyPair(SendCommands.getBase64Impl());
+            } catch (NoSuchAlgorithmException e) {
+                throw new IOException("Failed to generate adb key pair", e);
+            }
+            crypto.saveAdbKeyPair(getFileStreamPath("priv.key"), getFileStreamPath("pub.key"));
+        }
+        return crypto;
+    }
+
+    private static String getSocketName(int scid) {
+        if (scid == -1) {
+            return SOCKET_NAME_PREFIX;
+        }
+        return SOCKET_NAME_PREFIX + String.format("_%08x", scid);
+    }
+
+    private static void sleepBeforeRetry() {
+        try {
+            Thread.sleep(100);
+        } catch (InterruptedException ignore) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void readDeviceMeta(DataInputStream videoInputStream) throws IOException {
+        byte[] nameBuffer = new byte[DEVICE_NAME_FIELD_LENGTH];
+        videoInputStream.readFully(nameBuffer);
+        int len = 0;
+        while (len < DEVICE_NAME_FIELD_LENGTH && nameBuffer[len] != 0) {
+            len++;
+        }
+        String deviceName = new String(nameBuffer, 0, len, StandardCharsets.UTF_8);
+        if (!TextUtils.isEmpty(deviceName)) {
+            Log.i("scrcpy", "Connected device: " + deviceName);
         }
     }
 
@@ -1003,13 +1106,130 @@ public class Scrcpy extends Service {
         return Math.min(value, max);
     }
 
-    private static void closeSocket(Socket socket) {
-        if (socket != null) {
-            try {
-                socket.close();
-            } catch (IOException ignore) {
-                // ignore
+    private static void closeQuietly(Closeable closeable) {
+        if (closeable == null) {
+            return;
+        }
+        try {
+            closeable.close();
+        } catch (IOException ignore) {
+            // ignore
+        }
+    }
+
+    private static final class AdbStreamInputStream extends InputStream {
+        private final AdbStream stream;
+        private byte[] currentBuffer = new byte[0];
+        private int offset;
+        private boolean closed;
+
+        private AdbStreamInputStream(AdbStream stream) {
+            this.stream = stream;
+        }
+
+        @Override
+        public int read() throws IOException {
+            byte[] single = new byte[1];
+            int len = read(single, 0, 1);
+            if (len <= 0) {
+                return -1;
             }
+            return single[0] & 0xFF;
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            if (closed) {
+                throw new IOException("Adb stream already closed");
+            }
+            if (len == 0) {
+                return 0;
+            }
+            if (offset >= currentBuffer.length && !refill()) {
+                return -1;
+            }
+            int count = Math.min(len, currentBuffer.length - offset);
+            System.arraycopy(currentBuffer, offset, b, off, count);
+            offset += count;
+            return count;
+        }
+
+        private boolean refill() throws IOException {
+            while (!closed) {
+                byte[] chunk;
+                try {
+                    chunk = stream.read();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("Interrupted while reading from adb stream", e);
+                }
+                if (chunk != null && chunk.length > 0) {
+                    currentBuffer = chunk;
+                    offset = 0;
+                    return true;
+                }
+                if (stream.isClosed()) {
+                    return false;
+                }
+            }
+            return false;
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            stream.close();
+        }
+    }
+
+    private static final class AdbStreamOutputStream extends OutputStream {
+        private final AdbStream stream;
+        private boolean closed;
+
+        private AdbStreamOutputStream(AdbStream stream) {
+            this.stream = stream;
+        }
+
+        @Override
+        public void write(int b) throws IOException {
+            byte[] single = new byte[]{(byte) b};
+            write(single, 0, 1);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) throws IOException {
+            if (closed) {
+                throw new IOException("Adb stream already closed");
+            }
+            if (len <= 0) {
+                return;
+            }
+            byte[] payload;
+            if (off == 0 && len == b.length) {
+                payload = b;
+            } else {
+                payload = new byte[len];
+                System.arraycopy(b, off, payload, 0, len);
+            }
+
+            try {
+                stream.write(payload);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while writing to adb stream", e);
+            }
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            stream.close();
         }
     }
 

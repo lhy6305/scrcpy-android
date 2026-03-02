@@ -18,7 +18,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define LOG_TAG "scrcpy-v4l2"
+#define LOG_TAG "amlogic-v4l2-capture"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
@@ -133,7 +133,7 @@ static void close_context(CaptureContext *ctx) {
     free(ctx);
 }
 
-static void configure_port_type(CaptureContext *ctx, int port_type) {
+static void amlogic_configure_port_type(CaptureContext *ctx, int port_type) {
     if (!ctx || ctx->fd < 0) {
         return;
     }
@@ -145,7 +145,7 @@ static void configure_port_type(CaptureContext *ctx, int port_type) {
     }
 }
 
-static int resolve_port_type(int source_type, int explicit_port_type) {
+static int amlogic_resolve_port_type(int source_type, int explicit_port_type) {
     if (explicit_port_type != -1) {
         return explicit_port_type;
     }
@@ -162,7 +162,7 @@ static int resolve_port_type(int source_type, int explicit_port_type) {
     return port_type_1 ? 0x1100A002 : 0x1100A001;
 }
 
-static void configure_mode(CaptureContext *ctx, int mode) {
+static void amlogic_configure_mode(CaptureContext *ctx, int mode) {
     if (!ctx || ctx->fd < 0 || mode < 0) {
         return;
     }
@@ -172,7 +172,7 @@ static void configure_mode(CaptureContext *ctx, int mode) {
     }
 }
 
-static void configure_rotation(CaptureContext *ctx, int rotation) {
+static void amlogic_configure_rotation(CaptureContext *ctx, int rotation) {
     if (!ctx || ctx->fd < 0) {
         return;
     }
@@ -193,7 +193,7 @@ static void configure_rotation(CaptureContext *ctx, int rotation) {
     }
 }
 
-static void configure_crop(CaptureContext *ctx, int left, int top, int width, int height) {
+static void amlogic_configure_crop(CaptureContext *ctx, int left, int top, int width, int height) {
     if (!ctx || ctx->fd < 0 || width <= 0 || height <= 0 || left < 0 || top < 0) {
         return;
     }
@@ -211,7 +211,7 @@ static void configure_crop(CaptureContext *ctx, int left, int top, int width, in
     }
 }
 
-static void query_current_source_size(CaptureContext *ctx, struct v4l2_format *fmt) {
+static void amlogic_query_current_source_size(CaptureContext *ctx, struct v4l2_format *fmt) {
     if (!ctx || !fmt || ctx->fd < 0) {
         return;
     }
@@ -236,7 +236,7 @@ static void query_current_source_size(CaptureContext *ctx, struct v4l2_format *f
     }
 }
 
-static void configure_frame_rate(CaptureContext *ctx, int fps) {
+static void amlogic_configure_frame_rate(CaptureContext *ctx, int fps) {
     if (!ctx || ctx->fd < 0 || fps <= 0) {
         return;
     }
@@ -319,7 +319,7 @@ static bool is_yuv420_family(uint32_t pixel_format) {
     }
 }
 
-static void apply_microdimming_yuv420(const uint8_t *src, uint8_t *dst, uint32_t width, uint32_t height, uint32_t bytes_per_line,
+static void amlogic_apply_microdimming_yuv420(const uint8_t *src, uint8_t *dst, uint32_t width, uint32_t height, uint32_t bytes_per_line,
                                       uint32_t frame_size) {
     if (!src || !dst || width == 0 || height == 0) {
         return;
@@ -447,7 +447,7 @@ static uint32_t estimate_frame_size(const CaptureContext *ctx) {
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeOpen(JNIEnv *env, jclass clazz,
+Java_com_genymobile_scrcpy_video_AmlogicV4l2CaptureNative_nativeOpen(JNIEnv *env, jclass clazz,
                                                                jstring device_path, jint width,
                                                                jint height, jint fps, jint port_type,
                                                                jint source_type,
@@ -506,16 +506,16 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeOpen(JNIEnv *env, jclas
     ctx->fd = fd;
     ctx->streaming = false;
 
-    int resolved_port_type = resolve_port_type(source_type, port_type);
+    int resolved_port_type = amlogic_resolve_port_type(source_type, port_type);
     ctx->microdimming_enabled = ((uint32_t) resolved_port_type & 0x00010000U) != 0U;
     ctx->microdimming_warned = false;
     if (ctx->microdimming_enabled) {
         LOGI("Amlogic microdimming path enabled by portType bit16");
     }
-    configure_port_type(ctx, resolved_port_type);
-    configure_mode(ctx, mode);
-    configure_rotation(ctx, rotation);
-    configure_frame_rate(ctx, fps);
+    amlogic_configure_port_type(ctx, resolved_port_type);
+    amlogic_configure_mode(ctx, mode);
+    amlogic_configure_rotation(ctx, rotation);
+    amlogic_configure_frame_rate(ctx, fps);
 
     int requested_width = width;
     int requested_height = height;
@@ -550,7 +550,7 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeOpen(JNIEnv *env, jclas
         LOGI("Applied default set_format fallback: %ux%u fourcc=0x%x", fmt.fmt.pix.width, fmt.fmt.pix.height, fmt.fmt.pix.pixelformat);
     }
 
-    configure_crop(ctx, crop_left, crop_top, crop_width, crop_height);
+    amlogic_configure_crop(ctx, crop_left, crop_top, crop_width, crop_height);
 
     struct v4l2_requestbuffers req;
     memset(&req, 0, sizeof(req));
@@ -646,7 +646,7 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeOpen(JNIEnv *env, jclas
         ctx->frame_capacity = estimate_frame_size(ctx);
     }
 
-    query_current_source_size(ctx, &fmt);
+    amlogic_query_current_source_size(ctx, &fmt);
     ctx->width = fmt.fmt.pix.width;
     ctx->height = fmt.fmt.pix.height;
     if (fmt.fmt.pix.bytesperline > 0) {
@@ -678,7 +678,7 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeOpen(JNIEnv *env, jclas
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeReadFrame(JNIEnv *env, jclass clazz,
+Java_com_genymobile_scrcpy_video_AmlogicV4l2CaptureNative_nativeReadFrame(JNIEnv *env, jclass clazz,
                                                                     jlong handle, jobject frame_buffer,
                                                                     jlongArray frame_info) {
     (void) clazz;
@@ -753,7 +753,7 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeReadFrame(JNIEnv *env, 
             const uint8_t *src = (const uint8_t *) ctx->buffers[buf.index].address;
             if (ctx->microdimming_enabled) {
                 if (is_yuv420_family(ctx->pixel_format)) {
-                    apply_microdimming_yuv420(src, dst, ctx->width, ctx->height, ctx->bytes_per_line, bytes_used);
+                    amlogic_apply_microdimming_yuv420(src, dst, ctx->width, ctx->height, ctx->bytes_per_line, bytes_used);
                 } else {
                     if (!ctx->microdimming_warned) {
                         LOGW("microdimming requested but unsupported pixel format 0x%x, passthrough frame", ctx->pixel_format);
@@ -804,7 +804,7 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeReadFrame(JNIEnv *env, 
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeReleaseFrame(JNIEnv *env, jclass clazz,
+Java_com_genymobile_scrcpy_video_AmlogicV4l2CaptureNative_nativeReleaseFrame(JNIEnv *env, jclass clazz,
                                                                        jlong handle, jint buffer_index) {
     (void) clazz;
 
@@ -840,7 +840,7 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeReleaseFrame(JNIEnv *en
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeClose(JNIEnv *env, jclass clazz,
+Java_com_genymobile_scrcpy_video_AmlogicV4l2CaptureNative_nativeClose(JNIEnv *env, jclass clazz,
                                                                 jlong handle) {
     (void) env;
     (void) clazz;

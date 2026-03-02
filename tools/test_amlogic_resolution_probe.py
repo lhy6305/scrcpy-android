@@ -312,7 +312,7 @@ def main() -> int:
             all_ok = False
 
     run_cmd(
-        [args.adb, "logcat", "-d", "-t", str(args.logcat_lines), "-s", "scrcpy:D", "AmlogicV4l2Encoder:D", "AmlogicV4L2:D", "*:S"],
+        [args.adb, "logcat", "-d", "-t", str(args.logcat_lines), "-s", "scrcpy:D", "AmlogicV4l2CaptureProcessor:D", "AmlogicV4L2:D", "*:S"],
         timeout=30,
         check=False,
     )

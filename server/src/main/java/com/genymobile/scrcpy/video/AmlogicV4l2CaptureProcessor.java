@@ -20,7 +20,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-public final class AmlogicV4l2Encoder implements AsyncProcessor {
+public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
 
     private static final int DEFAULT_I_FRAME_INTERVAL = 10;
     private static final int DEFAULT_FRAME_RATE = 30;
@@ -32,7 +32,7 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
 
     private Thread thread;
 
-    public AmlogicV4l2Encoder(Streamer streamer, Options options) {
+    public AmlogicV4l2CaptureProcessor(Streamer streamer, Options options) {
         this.streamer = streamer;
         this.options = options;
     }
@@ -43,7 +43,7 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
         }
 
         String devicePath = resolveDevicePath(options);
-        try (AmlogicV4l2Native capture = AmlogicV4l2Native.open(devicePath,
+        try (AmlogicV4l2CaptureNative capture = AmlogicV4l2CaptureNative.open(devicePath,
                 options.getAmlogicV4l2Width(), options.getAmlogicV4l2Height(), options.getAmlogicV4l2Fps(),
                 options.getAmlogicV4l2PortType(), options.getAmlogicV4l2SourceType(), options.getAmlogicV4l2Mode(),
                 options.getAmlogicV4l2Rotation(),
@@ -58,7 +58,7 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
                     + ", fmt=0x" + Integer.toHexString(pixelFormat)
                     + " (" + fourccToString(pixelFormat) + ")");
 
-            if (pixelFormat == AmlogicV4l2Native.PIXEL_FORMAT_H264) {
+            if (pixelFormat == AmlogicV4l2CaptureNative.PIXEL_FORMAT_H264) {
                 streamH264Passthrough(capture);
             } else {
                 streamRawWithEncoder(capture);
@@ -66,15 +66,15 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
         }
     }
 
-    private void streamH264Passthrough(AmlogicV4l2Native capture) throws IOException {
+    private void streamH264Passthrough(AmlogicV4l2CaptureNative capture) throws IOException {
         ByteBuffer frameBuffer = ByteBuffer.allocateDirect(Math.max(capture.getFrameCapacity(), 1));
-        AmlogicV4l2Native.FrameMetadata metadata = new AmlogicV4l2Native.FrameMetadata();
+        AmlogicV4l2CaptureNative.FrameMetadata metadata = new AmlogicV4l2CaptureNative.FrameMetadata();
         boolean configSent = false;
 
         while (!stopped.get()) {
             frameBuffer.clear();
             int packetSize = capture.readFrame(frameBuffer, metadata);
-            if (packetSize == AmlogicV4l2Native.EAGAIN) {
+            if (packetSize == AmlogicV4l2CaptureNative.EAGAIN) {
                 continue;
             }
             if (packetSize <= 0) {
@@ -117,7 +117,7 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
         }
     }
 
-    private void streamRawWithEncoder(AmlogicV4l2Native capture) throws IOException, ConfigurationException {
+    private void streamRawWithEncoder(AmlogicV4l2CaptureNative capture) throws IOException, ConfigurationException {
         Size size = capture.getSize();
         int width = size.getWidth();
         int height = size.getHeight();
@@ -138,7 +138,7 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
             ByteBuffer rawFrameBuffer = ByteBuffer.allocateDirect(Math.max(capture.getFrameCapacity(), 1));
             byte[] rawScratch = new byte[Math.max(capture.getFrameCapacity(), 1)];
             byte[] converted = new byte[width * height * 3 / 2];
-            AmlogicV4l2Native.FrameMetadata metadata = new AmlogicV4l2Native.FrameMetadata();
+            AmlogicV4l2CaptureNative.FrameMetadata metadata = new AmlogicV4l2CaptureNative.FrameMetadata();
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
             int[] outputDebugCount = new int[]{0};
             long statNextLogMs = System.currentTimeMillis() + 1000;
@@ -149,7 +149,7 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
             while (!stopped.get()) {
                 rawFrameBuffer.clear();
                 int rawSize = capture.readFrame(rawFrameBuffer, metadata);
-                if (rawSize == AmlogicV4l2Native.EAGAIN) {
+                if (rawSize == AmlogicV4l2CaptureNative.EAGAIN) {
                     ++statEagain;
                     drainEncoder(codec, bufferInfo, outputDebugCount);
                     long now = System.currentTimeMillis();
@@ -369,18 +369,18 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
         }
 
         int effectiveStride = resolveInputStride(srcFourcc, srcStride, rawSize, width, height);
-        if (srcFourcc == AmlogicV4l2Native.PIXEL_FORMAT_NV12) {
+        if (srcFourcc == AmlogicV4l2CaptureNative.PIXEL_FORMAT_NV12) {
             convertNvToYuv420(rawScratch, rawSize, effectiveStride, width, height, false, dstPlanar, outYuv);
-        } else if (srcFourcc == AmlogicV4l2Native.PIXEL_FORMAT_NV21) {
+        } else if (srcFourcc == AmlogicV4l2CaptureNative.PIXEL_FORMAT_NV21) {
             convertNvToYuv420(rawScratch, rawSize, effectiveStride, width, height, true, dstPlanar, outYuv);
-        } else if (srcFourcc == AmlogicV4l2Native.PIXEL_FORMAT_YV12) {
+        } else if (srcFourcc == AmlogicV4l2CaptureNative.PIXEL_FORMAT_YV12) {
             convertYv12ToYuv420(rawScratch, rawSize, effectiveStride, width, height, dstPlanar, outYuv);
-        } else if (srcFourcc == AmlogicV4l2Native.PIXEL_FORMAT_YUYV) {
+        } else if (srcFourcc == AmlogicV4l2CaptureNative.PIXEL_FORMAT_YUYV) {
             convertYuyvToYuv420(rawScratch, rawSize, effectiveStride, width, height, dstPlanar, outYuv);
-        } else if (srcFourcc == AmlogicV4l2Native.PIXEL_FORMAT_RGB3
-                || srcFourcc == AmlogicV4l2Native.PIXEL_FORMAT_RGB4
-                || srcFourcc == AmlogicV4l2Native.PIXEL_FORMAT_RGBP
-                || srcFourcc == AmlogicV4l2Native.PIXEL_FORMAT_RGBR) {
+        } else if (srcFourcc == AmlogicV4l2CaptureNative.PIXEL_FORMAT_RGB3
+                || srcFourcc == AmlogicV4l2CaptureNative.PIXEL_FORMAT_RGB4
+                || srcFourcc == AmlogicV4l2CaptureNative.PIXEL_FORMAT_RGBP
+                || srcFourcc == AmlogicV4l2CaptureNative.PIXEL_FORMAT_RGBR) {
             convertRgbToYuv420(rawScratch, rawSize, effectiveStride, width, height, srcFourcc, dstPlanar, outYuv);
         } else {
             throw new ConfigurationException("Unsupported V4L2 raw format: 0x" + Integer.toHexString(srcFourcc) + " ("
@@ -393,8 +393,8 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
     private static int resolveInputStride(int srcFourcc, int advertisedStride, int rawSize, int width, int height) {
         int safeHeight = Math.max(height, 1);
         switch (srcFourcc) {
-            case AmlogicV4l2Native.PIXEL_FORMAT_NV12:
-            case AmlogicV4l2Native.PIXEL_FORMAT_NV21: {
+            case AmlogicV4l2CaptureNative.PIXEL_FORMAT_NV12:
+            case AmlogicV4l2CaptureNative.PIXEL_FORMAT_NV21: {
                 int stride = Math.max(advertisedStride, width);
                 long expected = (long) stride * safeHeight * 3L / 2L;
                 if (expected <= rawSize) {
@@ -414,7 +414,7 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
 
                 return width;
             }
-            case AmlogicV4l2Native.PIXEL_FORMAT_YUYV: {
+            case AmlogicV4l2CaptureNative.PIXEL_FORMAT_YUYV: {
                 int minStride = width * 2;
                 int stride = Math.max(advertisedStride, minStride);
                 long expected = (long) stride * safeHeight;
@@ -430,7 +430,7 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
                 }
                 return minStride;
             }
-            case AmlogicV4l2Native.PIXEL_FORMAT_YV12: {
+            case AmlogicV4l2CaptureNative.PIXEL_FORMAT_YV12: {
                 int stride = Math.max(advertisedStride, width);
                 int chromaStride = Math.max(stride / 2, width / 2);
                 long expected = (long) stride * safeHeight + (long) chromaStride * (safeHeight / 2) * 2L;
@@ -447,7 +447,7 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
                 }
                 return width;
             }
-            case AmlogicV4l2Native.PIXEL_FORMAT_RGB3: {
+            case AmlogicV4l2CaptureNative.PIXEL_FORMAT_RGB3: {
                 int minStride = width * 3;
                 int stride = Math.max(advertisedStride, minStride);
                 long expected = (long) stride * safeHeight;
@@ -462,7 +462,7 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
                 }
                 return minStride;
             }
-            case AmlogicV4l2Native.PIXEL_FORMAT_RGB4: {
+            case AmlogicV4l2CaptureNative.PIXEL_FORMAT_RGB4: {
                 int minStride = width * 4;
                 int stride = Math.max(advertisedStride, minStride);
                 long expected = (long) stride * safeHeight;
@@ -477,8 +477,8 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
                 }
                 return minStride;
             }
-            case AmlogicV4l2Native.PIXEL_FORMAT_RGBP:
-            case AmlogicV4l2Native.PIXEL_FORMAT_RGBR: {
+            case AmlogicV4l2CaptureNative.PIXEL_FORMAT_RGBP:
+            case AmlogicV4l2CaptureNative.PIXEL_FORMAT_RGBR: {
                 int minStride = width * 2;
                 int stride = Math.max(advertisedStride, minStride);
                 long expected = (long) stride * safeHeight;
@@ -697,33 +697,33 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
     }
 
     private static int bytesPerPixel(int srcFourcc) throws ConfigurationException {
-        if (srcFourcc == AmlogicV4l2Native.PIXEL_FORMAT_RGB3) {
+        if (srcFourcc == AmlogicV4l2CaptureNative.PIXEL_FORMAT_RGB3) {
             return 3;
         }
-        if (srcFourcc == AmlogicV4l2Native.PIXEL_FORMAT_RGB4) {
+        if (srcFourcc == AmlogicV4l2CaptureNative.PIXEL_FORMAT_RGB4) {
             return 4;
         }
-        if (srcFourcc == AmlogicV4l2Native.PIXEL_FORMAT_RGBP || srcFourcc == AmlogicV4l2Native.PIXEL_FORMAT_RGBR) {
+        if (srcFourcc == AmlogicV4l2CaptureNative.PIXEL_FORMAT_RGBP || srcFourcc == AmlogicV4l2CaptureNative.PIXEL_FORMAT_RGBR) {
             return 2;
         }
         throw new ConfigurationException("Unsupported RGB format: 0x" + Integer.toHexString(srcFourcc));
     }
 
     private static void readRgb(byte[] src, int offset, int srcFourcc, int[] rgb) throws ConfigurationException {
-        if (srcFourcc == AmlogicV4l2Native.PIXEL_FORMAT_RGB3) {
+        if (srcFourcc == AmlogicV4l2CaptureNative.PIXEL_FORMAT_RGB3) {
             rgb[0] = src[offset] & 0xFF;
             rgb[1] = src[offset + 1] & 0xFF;
             rgb[2] = src[offset + 2] & 0xFF;
             return;
         }
-        if (srcFourcc == AmlogicV4l2Native.PIXEL_FORMAT_RGB4) {
+        if (srcFourcc == AmlogicV4l2CaptureNative.PIXEL_FORMAT_RGB4) {
             rgb[0] = src[offset] & 0xFF;
             rgb[1] = src[offset + 1] & 0xFF;
             rgb[2] = src[offset + 2] & 0xFF;
             return;
         }
         int packed = (src[offset] & 0xFF) | ((src[offset + 1] & 0xFF) << 8);
-        if (srcFourcc == AmlogicV4l2Native.PIXEL_FORMAT_RGBP) {
+        if (srcFourcc == AmlogicV4l2CaptureNative.PIXEL_FORMAT_RGBP) {
             int r = (packed >> 11) & 0x1F;
             int g = (packed >> 5) & 0x3F;
             int b = packed & 0x1F;
@@ -732,7 +732,7 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
             rgb[2] = (b * 255 + 15) / 31;
             return;
         }
-        if (srcFourcc == AmlogicV4l2Native.PIXEL_FORMAT_RGBR) {
+        if (srcFourcc == AmlogicV4l2CaptureNative.PIXEL_FORMAT_RGBR) {
             int r = (packed >> 10) & 0x1F;
             int g = (packed >> 5) & 0x1F;
             int b = packed & 0x1F;
@@ -781,7 +781,7 @@ public final class AmlogicV4l2Encoder implements AsyncProcessor {
                 Ln.d("Amlogic V4L2 streaming stopped");
                 listener.onTerminated(true);
             }
-        }, "video-amlogic-v4l2");
+        }, "video-amlogic-v4l2-capture");
         thread.start();
     }
 

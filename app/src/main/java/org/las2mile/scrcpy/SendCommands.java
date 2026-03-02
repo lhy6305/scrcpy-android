@@ -16,6 +16,7 @@ import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
+import java.util.Locale;
 
 
 public class SendCommands {
@@ -65,29 +66,21 @@ public class SendCommands {
 
 
     public int SendAdbCommands(Context context, final byte[] fileBase64, final String ip, String localip, int bitrate, int size,
-            int width, int height, boolean useAmlogicMode) {
+            int width, int height, boolean useAmlogicMode, int scid) {
         this.context = context;
         status = 1;
         final StringBuilder command = new StringBuilder();
         command.append(" CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server 3.3.4");
         command.append(" log_level=info");
+        command.append(String.format(Locale.US, " scid=%08x", scid & 0x7fffffff));
         command.append(" video=true");
         command.append(" video_source=display");
         command.append(" max_fps=30");
         command.append(" audio=true");
-        command.append(" audio_codec=aac");
-        command.append(" video_codec=h264");
         command.append(" video_codec_options=repeat-previous-frame-after:long=0");
         command.append(" video_bit_rate=").append(bitrate);
         command.append(" control=true");
         command.append(" tunnel_forward=true");
-        command.append(" send_dummy_byte=false");
-        command.append(" send_device_meta=false");
-        command.append(" send_frame_meta=true");
-        command.append(" send_codec_meta=true");
-        command.append(" clipboard_autosync=true");
-        command.append(" downsize_on_error=true");
-        command.append(" cleanup=true");
         command.append(" max_size=").append(size);
         if (useAmlogicMode) {
             command.append(" amlogic_v4l2=true");

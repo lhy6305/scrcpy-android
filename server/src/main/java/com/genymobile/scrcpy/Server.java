@@ -20,8 +20,8 @@ import com.genymobile.scrcpy.util.LogUtils;
 import com.genymobile.scrcpy.video.CameraCapture;
 import com.genymobile.scrcpy.video.NewDisplayCapture;
 import com.genymobile.scrcpy.video.ScreenCapture;
-import com.genymobile.scrcpy.video.AmlogicV4l2Encoder;
-import com.genymobile.scrcpy.video.AmlogicV4l2Native;
+import com.genymobile.scrcpy.video.AmlogicV4l2CaptureProcessor;
+import com.genymobile.scrcpy.video.AmlogicV4l2CaptureNative;
 import com.genymobile.scrcpy.video.SurfaceCapture;
 import com.genymobile.scrcpy.video.SurfaceEncoder;
 import com.genymobile.scrcpy.video.VideoSource;
@@ -90,7 +90,7 @@ public final class Server {
 
         if (options.getAmlogicV4l2()) {
             try {
-                AmlogicV4l2Native.preload();
+                AmlogicV4l2CaptureNative.preload();
             } catch (IOException e) {
                 Ln.e("Failed to preload Amlogic V4L2 native library", e);
                 throw new ConfigurationException("Could not load Amlogic V4L2 native library");
@@ -136,7 +136,7 @@ public final class Server {
                     audioCapture = new AudioPlaybackCapture(options.getAudioDup());
                 }
 
-                Streamer audioStreamer = new Streamer(connection.getAudioOutputStream(), audioCodec, options.getSendCodecMeta(),
+                Streamer audioStreamer = new Streamer(connection.getAudioFd(), audioCodec, options.getSendCodecMeta(),
                         options.getSendFrameMeta());
                 AsyncProcessor audioRecorder;
                 if (audioCodec == AudioCodec.RAW) {
@@ -148,10 +148,10 @@ public final class Server {
             }
 
             if (video) {
-                Streamer videoStreamer = new Streamer(connection.getVideoOutputStream(), options.getVideoCodec(), options.getSendCodecMeta(),
+                Streamer videoStreamer = new Streamer(connection.getVideoFd(), options.getVideoCodec(), options.getSendCodecMeta(),
                         options.getSendFrameMeta());
                 if (options.getAmlogicV4l2() && options.getVideoSource() == VideoSource.DISPLAY) {
-                    AsyncProcessor videoProcessor = new AmlogicV4l2Encoder(videoStreamer, options);
+                    AsyncProcessor videoProcessor = new AmlogicV4l2CaptureProcessor(videoStreamer, options);
                     asyncProcessors.add(videoProcessor);
                 } else {
                     SurfaceCapture surfaceCapture;
