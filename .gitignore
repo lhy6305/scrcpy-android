@@ -15,7 +15,7 @@ captures/
 **/.cxx/
 
 # Generated server payload copied into app assets
-app/src/main/assets/scrcpy-server.jar
+app/src/main/assets/*.jar
 
 # IDE
 .idea/
