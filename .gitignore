@@ -1,0 +1,39 @@
+# Android/Gradle local config
+local.properties
+.gradle/
+.android-home/
+.gradle-home/
+.user-home/
+
+# Build outputs
+build/
+**/build/
+release-out/
+captures/
+.externalNativeBuild/
+.cxx/
+**/.cxx/
+
+# Generated server payload copied into app assets
+app/src/main/assets/scrcpy-server.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+.kotlin/
+
+# Signing files
+*.jks
+*.keystore
+/git-*.bat
+/git-*.sh
+/ssh-key-*
+
+# Logs and OS files
+*.log
+.DS_Store
+Thumbs.db
+Desktop.ini

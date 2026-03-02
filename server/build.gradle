@@ -1,0 +1,73 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace = 'com.genymobile.scrcpy'
+    compileSdk 31
+    ndkVersion "27.3.13750724"
+    defaultConfig {
+        applicationId "com.genymobile.scrcpy"
+        minSdkVersion 21
+        targetSdkVersion 31
+        versionCode 30304
+        versionName "3.3.4"
+        testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
+        externalNativeBuild {
+            ndkBuild {
+                cppFlags "-std=c++17 -fno-exceptions -fno-rtti"
+            }
+        }
+        ndk {
+            abiFilters "armeabi-v7a", "arm64-v8a"
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+    externalNativeBuild {
+        ndkBuild {
+            path file("src/main/cpp/Android.mk")
+        }
+    }
+    buildFeatures {
+        buildConfig = true
+        aidl = true
+    }
+    lint {
+        disable 'UseRequiresApi', 'ExpiredTargetSdkVersion'
+    }
+
+    task copyRelease(type: Copy){
+        dependsOn 'packageRelease', 'deleteServer'
+        from file('build/outputs/apk/release/server-release-unsigned.apk')
+        into file('../app/src/main/assets')
+        rename('server-release-unsigned.apk', 'scrcpy-server.jar')
+    }
+
+    task deleteServer(type: Delete){
+	delete "../app/src/main/assets/scrcpy-server.jar"
+   }
+
+
+    task copyDebug(type: Copy){
+        dependsOn 'packageDebug', 'deleteServer'
+        from file("build/outputs/apk/debug/server-debug.apk")
+        into file("../app/src/main/assets/")
+        rename('server-debug.apk', 'scrcpy-server.jar')
+    }
+
+    afterEvaluate {
+        assembleRelease.finalizedBy(copyRelease)
+        assembleDebug.finalizedBy(copyDebug)
+    }
+}
+
+
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}
+
+apply from: "$project.rootDir/config/android-checkstyle.gradle"
