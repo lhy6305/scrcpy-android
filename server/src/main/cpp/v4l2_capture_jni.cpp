@@ -284,30 +284,93 @@ static bool try_set_format(int fd, int width, int height, uint32_t pixel_format,
     return true;
 }
 
+static bool is_supported_pixel_format(uint32_t pixel_format) {
+    switch (pixel_format) {
+        case V4L2_PIX_FMT_NV21:
+        case V4L2_PIX_FMT_NV12:
+        case V4L2_PIX_FMT_YVU420:
+        case V4L2_PIX_FMT_YUYV:
+        case V4L2_PIX_FMT_RGB24:
+        case V4L2_PIX_FMT_RGB32:
+        case V4L2_PIX_FMT_RGB565:
+        case V4L2_PIX_FMT_RGB555:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static uint32_t estimate_frame_size_for_format(uint32_t pixel_format, uint32_t width, uint32_t height, uint32_t bytes_per_line) {
+    uint32_t bpl = bytes_per_line > 0 ? bytes_per_line : width;
+    if (bpl == 0 || height == 0) {
+        return 0;
+    }
+
+    switch (pixel_format) {
+        case V4L2_PIX_FMT_NV12:
+        case V4L2_PIX_FMT_NV21:
+        case V4L2_PIX_FMT_YVU420:
+            return bpl * height * 3 / 2;
+        case V4L2_PIX_FMT_YUYV:
+        case V4L2_PIX_FMT_RGB565:
+        case V4L2_PIX_FMT_RGB555:
+        case V4L2_PIX_FMT_RGB24:
+        case V4L2_PIX_FMT_RGB32:
+            return bpl * height;
+        default:
+            return width * height * 2;
+    }
+}
+
+static bool set_format_with_candidates(int fd, int width, int height, uint32_t preferred_format, struct v4l2_format *out_fmt) {
+    uint32_t candidates[] = {
+            preferred_format,
+            V4L2_PIX_FMT_NV21,
+            V4L2_PIX_FMT_NV12,
+            V4L2_PIX_FMT_YVU420,
+            V4L2_PIX_FMT_YUYV,
+            V4L2_PIX_FMT_RGB24,
+            V4L2_PIX_FMT_RGB32,
+            V4L2_PIX_FMT_RGB565,
+            V4L2_PIX_FMT_RGB555,
+    };
+
+    bool has_candidate = false;
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        uint32_t candidate = candidates[i];
+        if (!is_supported_pixel_format(candidate)) {
+            continue;
+        }
+
+        bool duplicate = false;
+        for (size_t j = 0; j < i; ++j) {
+            if (candidates[j] == candidate) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) {
+            continue;
+        }
+
+        has_candidate = true;
+        if (try_set_format(fd, width, height, candidate, out_fmt)) {
+            return true;
+        }
+    }
+
+    if (!has_candidate) {
+        return try_set_format(fd, width, height, AML_DEFAULT_PIXEL_FORMAT, out_fmt);
+    }
+
+    return false;
+}
+
 static uint32_t estimate_frame_size(const CaptureContext *ctx) {
     if (!ctx) {
         return 0;
     }
-
-    uint32_t bpl = ctx->bytes_per_line > 0 ? ctx->bytes_per_line : ctx->width;
-    if (bpl == 0 || ctx->height == 0) {
-        return ctx->frame_capacity;
-    }
-
-    switch (ctx->pixel_format) {
-        case V4L2_PIX_FMT_NV12:
-        case V4L2_PIX_FMT_NV21:
-        case V4L2_PIX_FMT_YVU420:
-            return bpl * ctx->height * 3 / 2;
-        case V4L2_PIX_FMT_YUYV:
-            return bpl * ctx->height;
-        case V4L2_PIX_FMT_RGB24:
-            return bpl * ctx->height;
-        case V4L2_PIX_FMT_RGB32:
-            return bpl * ctx->height;
-        default:
-            return ctx->frame_capacity;
-    }
+    return estimate_frame_size_for_format(ctx->pixel_format, ctx->width, ctx->height, ctx->bytes_per_line);
 }
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -372,28 +435,37 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeOpen(JNIEnv *env, jclas
     configure_rotation(ctx, rotation);
     configure_frame_rate(ctx, fps);
 
+    int requested_width = width;
+    int requested_height = height;
+    uint32_t requested_format = (uint32_t) preferred_pixel_format;
+    bool default_set_format = false;
+    if (requested_width <= 0 || requested_height <= 0) {
+        requested_width = AML_DEFAULT_WIDTH;
+        requested_height = AML_DEFAULT_HEIGHT;
+        requested_format = AML_DEFAULT_PIXEL_FORMAT;
+        default_set_format = true;
+        LOGW("Invalid set_format size(%d,%d), fallback to 640x480+NV21", width, height);
+    }
+    if (!is_supported_pixel_format(requested_format)) {
+        requested_width = AML_DEFAULT_WIDTH;
+        requested_height = AML_DEFAULT_HEIGHT;
+        requested_format = AML_DEFAULT_PIXEL_FORMAT;
+        default_set_format = true;
+        LOGW("Unsupported set_format fourcc(0x%x), fallback to 640x480+NV21", (uint32_t) preferred_pixel_format);
+    }
+
     struct v4l2_format fmt;
     memset(&fmt, 0, sizeof(fmt));
-    uint32_t format_candidates[] = {
-            (uint32_t) preferred_pixel_format,
-            V4L2_PIX_FMT_NV21,
-            V4L2_PIX_FMT_NV12,
-            V4L2_PIX_FMT_YUYV,
-    };
-    bool format_ok = false;
-    for (size_t i = 0; i < sizeof(format_candidates) / sizeof(format_candidates[0]); ++i) {
-        if (i > 0 && format_candidates[i] == format_candidates[0]) {
-            continue;
+    if (!set_format_with_candidates(fd, requested_width, requested_height, requested_format, &fmt)) {
+        if (!try_set_format(fd, AML_DEFAULT_WIDTH, AML_DEFAULT_HEIGHT, AML_DEFAULT_PIXEL_FORMAT, &fmt)) {
+            close_context(ctx);
+            throw_io_exception(env, "VIDIOC_S_FMT failed (including 640x480+NV21 fallback)");
+            return 0;
         }
-        if (try_set_format(fd, width, height, format_candidates[i], &fmt)) {
-            format_ok = true;
-            break;
-        }
+        default_set_format = true;
     }
-    if (!format_ok) {
-        close_context(ctx);
-        throw_io_exception(env, "VIDIOC_S_FMT failed for all candidate formats");
-        return 0;
+    if (default_set_format) {
+        LOGI("Applied default set_format fallback: %ux%u fourcc=0x%x", fmt.fmt.pix.width, fmt.fmt.pix.height, fmt.fmt.pix.pixelformat);
     }
 
     configure_crop(ctx, crop_left, crop_top, crop_width, crop_height);
@@ -484,11 +556,11 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeOpen(JNIEnv *env, jclas
     ctx->pixel_format = fmt.fmt.pix.pixelformat;
     ctx->bytes_per_line = fmt.fmt.pix.bytesperline;
     ctx->frame_capacity = fmt.fmt.pix.sizeimage;
-    if (ctx->frame_capacity == 0) {
-        ctx->frame_capacity = ctx->width * ctx->height * 2;
-    }
     if (ctx->bytes_per_line == 0) {
         ctx->bytes_per_line = ctx->width;
+    }
+    if (ctx->frame_capacity == 0) {
+        ctx->frame_capacity = estimate_frame_size(ctx);
     }
 
     query_current_source_size(ctx, &fmt);
@@ -504,7 +576,7 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2Native_nativeOpen(JNIEnv *env, jclas
         ctx->bytes_per_line = ctx->width;
     }
     if (ctx->frame_capacity == 0) {
-        ctx->frame_capacity = ctx->width * ctx->height * 2;
+        ctx->frame_capacity = estimate_frame_size(ctx);
     }
 
     if (open_info && env->GetArrayLength(open_info) >= 5) {
