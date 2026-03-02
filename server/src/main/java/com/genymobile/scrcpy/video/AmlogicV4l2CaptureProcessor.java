@@ -2,13 +2,17 @@ package com.genymobile.scrcpy.video;
 
 import com.genymobile.scrcpy.AsyncProcessor;
 import com.genymobile.scrcpy.Options;
+import com.genymobile.scrcpy.control.PositionMapper;
 import com.genymobile.scrcpy.device.ConfigurationException;
+import com.genymobile.scrcpy.device.Device;
+import com.genymobile.scrcpy.device.DisplayInfo;
 import com.genymobile.scrcpy.device.Size;
 import com.genymobile.scrcpy.device.Streamer;
 import com.genymobile.scrcpy.util.CodecOption;
 import com.genymobile.scrcpy.util.CodecUtils;
 import com.genymobile.scrcpy.util.IO;
 import com.genymobile.scrcpy.util.Ln;
+import com.genymobile.scrcpy.wrappers.ServiceManager;
 
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
@@ -33,6 +37,8 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
 
     private final Streamer streamer;
     private final Options options;
+    private final VirtualDisplayListener vdListener;
+    private final int captureDisplayId;
     private final boolean videoLatencyDropEnabled;
     private final int captureQueueDrainMax;
     private final long lateFrameDropThresholdUs;
@@ -50,14 +56,42 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
     private long driftBaseNowUs;
 
     public AmlogicV4l2CaptureProcessor(Streamer streamer, Options options) {
+        this(streamer, options, null, options.getDisplayId());
+    }
+
+    public AmlogicV4l2CaptureProcessor(Streamer streamer, Options options, VirtualDisplayListener vdListener, int captureDisplayId) {
         this.streamer = streamer;
         this.options = options;
+        this.vdListener = vdListener;
+        this.captureDisplayId = captureDisplayId;
         this.videoLatencyDropEnabled = options.getVideoLatencyDrop();
         this.captureQueueDrainMax = options.getAmlogicV4l2QueueDrainMax();
         this.lateFrameDropThresholdUs = options.getVideoLatencyDropThresholdMs() * 1_000L;
         this.lateFrameRecoverThresholdUs = options.getVideoLatencyRecoverThresholdMs() * 1_000L;
         this.syncFrameRequestIntervalMs = options.getVideoSyncRequestIntervalMs();
         this.forceRecoverDropCount = options.getVideoForceRecoverDropCount();
+    }
+
+    private void notifyPositionMapper(Size streamSize) {
+        if (vdListener == null) {
+            return;
+        }
+
+        int targetDisplayId = captureDisplayId == Device.DISPLAY_ID_NONE ? 0 : captureDisplayId;
+        Size targetSize = streamSize;
+        try {
+            DisplayInfo displayInfo = ServiceManager.getDisplayManager().getDisplayInfo(targetDisplayId);
+            if (displayInfo != null) {
+                targetSize = displayInfo.getSize();
+            } else {
+                Ln.w("Could not query display info for display " + targetDisplayId + ", using stream size for input mapping");
+            }
+        } catch (RuntimeException | AssertionError e) {
+            Ln.w("Failed to resolve display info for display " + targetDisplayId + ", using stream size for input mapping: " + e.getMessage());
+        }
+
+        PositionMapper positionMapper = PositionMapper.create(streamSize, null, targetSize);
+        vdListener.onNewVirtualDisplay(targetDisplayId, positionMapper);
     }
 
     private void streamCapture() throws IOException, ConfigurationException {
@@ -116,6 +150,7 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
                 options.getAmlogicV4l2CropHeight(), options.getAmlogicV4l2ReqBufCount(), options.getAmlogicV4l2PixelFormat(),
                 options.getAmlogicV4l2StrictCaps())) {
             Size streamSize = capture.getSize();
+            notifyPositionMapper(streamSize);
             streamer.writeVideoHeader(streamSize);
 
             int pixelFormat = capture.getPixelFormat();

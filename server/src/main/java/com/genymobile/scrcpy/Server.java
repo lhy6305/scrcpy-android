@@ -186,7 +186,8 @@ public final class Server {
                 Streamer videoStreamer = new Streamer(connection.getVideoFd(), videoCodecForStream, options.getSendCodecMeta(),
                         options.getSendFrameMeta());
                 if (useAmlogicV4l2) {
-                    AmlogicV4l2CaptureProcessor videoProcessor = new AmlogicV4l2CaptureProcessor(videoStreamer, options);
+                    AmlogicV4l2CaptureProcessor videoProcessor = new AmlogicV4l2CaptureProcessor(videoStreamer, options, controller,
+                            options.getDisplayId());
                     asyncProcessors.add(videoProcessor);
                     if (controller != null) {
                         controller.setVideoReset(videoProcessor::requestReset);
