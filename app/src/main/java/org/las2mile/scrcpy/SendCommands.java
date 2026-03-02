@@ -11,6 +11,7 @@ import com.tananaev.adblib.AdbConnection;
 import com.tananaev.adblib.AdbCrypto;
 import com.tananaev.adblib.AdbStream;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
@@ -113,13 +114,33 @@ public class SendCommands {
         return command.toString();
     }
 
+    private static String buildDetachedShellCommand(String command) {
+        String trimmed = command != null ? command.trim() : "";
+        if (trimmed.endsWith(";")) {
+            trimmed = trimmed.substring(0, trimmed.length() - 1);
+        }
+        if (trimmed.isEmpty()) {
+            return "";
+        }
+
+        // `nohup`/`setsid` keeps the child alive when we close the adb shell stream.
+        String escaped = trimmed.replace("'", "'\"'\"'");
+        return "("
+                + "(command -v nohup >/dev/null 2>&1 && nohup sh -c '" + escaped + "')"
+                + " || "
+                + "(command -v setsid >/dev/null 2>&1 && setsid sh -c '" + escaped + "')"
+                + " || "
+                + "(" + trimmed + ")"
+                + ") >/dev/null 2>&1 < /dev/null &";
+    }
+
     public Result sendAdbCommands(Context context, final byte[] fileBase64, final String ip, int bitrate, int maxSize,
             int width, int height, boolean useAmlogicMode, int scid, ProgressListener listener) {
         if (Thread.currentThread().isInterrupted()) {
             return Result.fail(Error.CANCELLED, "Cancelled");
         }
 
-        final String command = buildServerStartCommand(bitrate, maxSize, width, height, useAmlogicMode, scid);
+        final String command = buildDetachedShellCommand(buildServerStartCommand(bitrate, maxSize, width, height, useAmlogicMode, scid));
 
         try {
             adbWrite(context, ip, fileBase64, command, listener);
@@ -148,7 +169,10 @@ public class SendCommands {
             return Result.fail(Error.CANCELLED, "Cancelled");
         }
 
-        final String command = buildServerStartCommand(bitrate, maxSize, width, height, useAmlogicMode, scid);
+        // Start-only path must also detach; otherwise shell prompt won't return until server exits.
+        final String command = buildDetachedShellCommand(
+                buildServerStartCommand(bitrate, maxSize, width, height, useAmlogicMode, scid)
+        );
 
         // Some devices are very sensitive to reconnect timing (especially when ADB over TCP is single-connection).
         // Retry a few times to let the previous connection fully close.
@@ -378,6 +402,13 @@ public class SendCommands {
 
         report(listener, Phase.STARTING_SERVER);
         stream.write(command + '\n');
+        // Do not wait for prompt here: some devices keep shell output blocked for background jobs.
+        Thread.sleep(120);
+
+        // The start command is detached; we can safely close the shell channel now.
+        closeQuietly(stream);
+        closeQuietly(adb);
+        closeQuietly(sock);
     }
 
     private static void closeQuietly(Socket sock) {
@@ -386,6 +417,17 @@ public class SendCommands {
         }
         try {
             sock.close();
+        } catch (IOException ignore) {
+            // ignore
+        }
+    }
+
+    private static void closeQuietly(Closeable closeable) {
+        if (closeable == null) {
+            return;
+        }
+        try {
+            closeable.close();
         } catch (IOException ignore) {
             // ignore
         }
