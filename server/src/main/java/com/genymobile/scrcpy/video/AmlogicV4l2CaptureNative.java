@@ -60,11 +60,11 @@ public final class AmlogicV4l2CaptureNative implements Closeable {
 
     public static AmlogicV4l2CaptureNative open(String devicePath, int width, int height, int fps, int portType, int sourceType,
             int mode, int rotation, int cropLeft, int cropTop, int cropWidth, int cropHeight, int reqBufCount,
-            int preferredPixelFormat) throws IOException {
+            int preferredPixelFormat, boolean strictCaps) throws IOException {
         ensureLibraryLoaded();
         long[] openInfo = new long[5];
         long handle = nativeOpen(devicePath, width, height, fps, portType, sourceType, mode, rotation, cropLeft, cropTop, cropWidth,
-                cropHeight, reqBufCount, preferredPixelFormat, openInfo);
+                cropHeight, reqBufCount, preferredPixelFormat, strictCaps, openInfo);
         if (handle == 0) {
             throw new IOException("Failed to initialize V4L2 capture");
         }
@@ -192,7 +192,7 @@ public final class AmlogicV4l2CaptureNative implements Closeable {
 
     private static native long nativeOpen(String devicePath, int width, int height, int fps, int portType, int sourceType,
             int mode, int rotation, int cropLeft, int cropTop, int cropWidth, int cropHeight, int reqBufCount,
-            int preferredPixelFormat, long[] openInfo) throws IOException;
+            int preferredPixelFormat, boolean strictCaps, long[] openInfo) throws IOException;
 
     private static native int nativeReadFrame(long handle, ByteBuffer frameBuffer, long[] frameInfo) throws IOException;
 

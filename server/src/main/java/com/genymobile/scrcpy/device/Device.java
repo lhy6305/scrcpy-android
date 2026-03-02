@@ -40,9 +40,9 @@ public final class Device {
     public static final int INJECT_MODE_WAIT_FOR_RESULT = InputManager.INJECT_INPUT_EVENT_MODE_WAIT_FOR_RESULT;
     public static final int INJECT_MODE_WAIT_FOR_FINISH = InputManager.INJECT_INPUT_EVENT_MODE_WAIT_FOR_FINISH;
 
-    // The new display power method introduced in Android 15 does not work as expected:
+    // Disabled by default to keep compatibility with the upstream behavior:
     // <https://github.com/Genymobile/scrcpy/issues/5530>
-    private static final boolean USE_ANDROID_15_DISPLAY_POWER = false;
+    private static volatile boolean useAndroid15DisplayPower;
 
     private Device() {
         // not instantiable
@@ -50,6 +50,10 @@ public final class Device {
 
     public static String getDeviceName() {
         return Build.MODEL;
+    }
+
+    public static void configureAndroid15DisplayPower(boolean enabled) {
+        useAndroid15DisplayPower = enabled;
     }
 
     public static boolean supportsInputEvents(int displayId) {
@@ -131,8 +135,12 @@ public final class Device {
     public static boolean setDisplayPower(int displayId, boolean on) {
         assert displayId != Device.DISPLAY_ID_NONE;
 
-        if (USE_ANDROID_15_DISPLAY_POWER && Build.VERSION.SDK_INT >= AndroidVersions.API_35_ANDROID_15) {
-            return ServiceManager.getDisplayManager().requestDisplayPower(displayId, on);
+        if (useAndroid15DisplayPower && Build.VERSION.SDK_INT >= AndroidVersions.API_35_ANDROID_15) {
+            boolean ok = ServiceManager.getDisplayManager().requestDisplayPower(displayId, on);
+            if (ok) {
+                return true;
+            }
+            Ln.w("requestDisplayPower() failed, fallback to SurfaceControl.setDisplayPowerMode()");
         }
 
         boolean applyToMultiPhysicalDisplays = Build.VERSION.SDK_INT >= AndroidVersions.API_29_ANDROID_10;

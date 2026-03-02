@@ -260,10 +260,14 @@ static void amlogic_configure_frame_rate(CaptureContext *ctx, int fps) {
     }
 }
 
-static bool is_capture_streaming_supported(int fd) {
+static bool is_capture_streaming_supported(int fd, bool strict_caps) {
     struct v4l2_capability cap;
     memset(&cap, 0, sizeof(cap));
     if (xioctl(fd, VIDIOC_QUERYCAP, &cap) < 0) {
+        if (strict_caps) {
+            LOGE("VIDIOC_QUERYCAP failed in strict mode: %s", strerror(errno));
+            return false;
+        }
         LOGW("VIDIOC_QUERYCAP failed: %s, continue in compatibility mode", strerror(errno));
         return true;
     }
@@ -276,6 +280,10 @@ static bool is_capture_streaming_supported(int fd) {
     bool capture = (caps & V4L2_CAP_VIDEO_CAPTURE) != 0;
     bool streaming = (caps & V4L2_CAP_STREAMING) != 0;
     if (!capture || !streaming) {
+        if (strict_caps) {
+            LOGE("V4L2 capability mismatch in strict mode (capture=%d, streaming=%d)", capture ? 1 : 0, streaming ? 1 : 0);
+            return false;
+        }
         LOGW("V4L2 capability mismatch (capture=%d, streaming=%d), continue in compatibility mode", capture ? 1 : 0, streaming ? 1 : 0);
     }
     return true;
@@ -445,7 +453,6 @@ static bool set_format_with_candidates(int fd, int width, int height, uint32_t p
             V4L2_PIX_FMT_RGB555,
     };
 
-    bool has_candidate = false;
     for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
         uint32_t candidate = candidates[i];
         if (!is_supported_pixel_format(candidate)) {
@@ -463,16 +470,10 @@ static bool set_format_with_candidates(int fd, int width, int height, uint32_t p
             continue;
         }
 
-        has_candidate = true;
         if (try_set_format(fd, width, height, candidate, out_fmt)) {
             return true;
         }
     }
-
-    if (!has_candidate) {
-        return try_set_format(fd, width, height, AML_DEFAULT_PIXEL_FORMAT, out_fmt);
-    }
-
     return false;
 }
 
@@ -491,6 +492,7 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2CaptureNative_nativeOpen(JNIEnv *env
                                                                jint mode, jint rotation, jint crop_left,
                                                                jint crop_top, jint crop_width, jint crop_height,
                                                                jint req_buf_count, jint preferred_pixel_format,
+                                                               jboolean strict_caps,
                                                                jlongArray open_info) {
     (void) clazz;
 
@@ -524,7 +526,7 @@ Java_com_genymobile_scrcpy_video_AmlogicV4l2CaptureNative_nativeOpen(JNIEnv *env
     ++g_open_instances;
     pthread_mutex_unlock(&g_instance_mutex);
 
-    if (!is_capture_streaming_supported(fd)) {
+    if (!is_capture_streaming_supported(fd, strict_caps == JNI_TRUE)) {
         close(fd);
         release_instance_slot();
         errno = ENODEV;

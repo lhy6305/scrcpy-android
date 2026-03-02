@@ -67,6 +67,7 @@ public class Options {
     private List<CodecOption> audioCodecOptions;
     private boolean amlogicV4l2;
     private boolean amlogicV4l2Explicit;
+    private boolean amlogicV4l2StrictCaps;
     private String amlogicV4l2Device = "/dev/video12";
     private boolean amlogicV4l2DeviceSet;
     private int amlogicV4l2Instance = 1;
@@ -112,6 +113,7 @@ public class Options {
     private boolean sendFrameMeta = true; // send PTS so that the client may record properly
     private boolean sendDummyByte = true; // write a byte on start to detect connection issues
     private boolean sendCodecMeta = true; // write the codec metadata before the stream
+    private boolean android15DisplayPower;
 
     public Ln.Level getLogLevel() {
         return logLevel;
@@ -243,6 +245,10 @@ public class Options {
 
     public boolean getAmlogicV4l2Explicit() {
         return amlogicV4l2Explicit;
+    }
+
+    public boolean getAmlogicV4l2StrictCaps() {
+        return amlogicV4l2StrictCaps;
     }
 
     public String getAmlogicV4l2Device() {
@@ -395,6 +401,10 @@ public class Options {
 
     public boolean getSendCodecMeta() {
         return sendCodecMeta;
+    }
+
+    public boolean getAndroid15DisplayPower() {
+        return android15DisplayPower;
     }
 
     @SuppressWarnings("MethodLength")
@@ -582,6 +592,9 @@ public class Options {
                     options.amlogicV4l2Explicit = true;
                     options.amlogicV4l2 = Boolean.parseBoolean(value);
                     break;
+                case "amlogic_v4l2_strict_caps":
+                    options.amlogicV4l2StrictCaps = Boolean.parseBoolean(value);
+                    break;
                 case "amlogic_v4l2_device":
                     if (!value.isEmpty()) {
                         options.amlogicV4l2Device = value;
@@ -752,6 +765,9 @@ public class Options {
                     break;
                 case "send_codec_meta":
                     options.sendCodecMeta = Boolean.parseBoolean(value);
+                    break;
+                case "android15_display_power":
+                    options.android15DisplayPower = Boolean.parseBoolean(value);
                     break;
                 case "raw_stream":
                     boolean rawStream = Boolean.parseBoolean(value);

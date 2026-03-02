@@ -295,6 +295,7 @@ public final class Server {
 
         Ln.disableSystemStreams();
         Ln.initLogLevel(options.getLogLevel());
+        Device.configureAndroid15DisplayPower(options.getAndroid15DisplayPower());
 
         Ln.i("Device: [" + Build.MANUFACTURER + "] " + Build.BRAND + " " + Build.MODEL + " (Android " + Build.VERSION.RELEASE + ")");
 

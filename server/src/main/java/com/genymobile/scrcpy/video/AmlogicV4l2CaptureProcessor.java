@@ -42,6 +42,7 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
     private void streamCapture() throws IOException, ConfigurationException {
         List<String> devicePaths = resolveDevicePaths(options);
         Ln.i("Amlogic V4L2 device fallback " + (options.getAmlogicV4l2FallbackDevice() ? "enabled" : "disabled")
+                + ", strictCaps=" + options.getAmlogicV4l2StrictCaps()
                 + ", candidates=" + devicePaths);
         while (!stopped.get()) {
             IOException lastOpenError = null;
@@ -91,7 +92,8 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
                 options.getAmlogicV4l2PortType(), options.getAmlogicV4l2SourceType(), options.getAmlogicV4l2Mode(),
                 options.getAmlogicV4l2Rotation(),
                 options.getAmlogicV4l2CropLeft(), options.getAmlogicV4l2CropTop(), options.getAmlogicV4l2CropWidth(),
-                options.getAmlogicV4l2CropHeight(), options.getAmlogicV4l2ReqBufCount(), options.getAmlogicV4l2PixelFormat())) {
+                options.getAmlogicV4l2CropHeight(), options.getAmlogicV4l2ReqBufCount(), options.getAmlogicV4l2PixelFormat(),
+                options.getAmlogicV4l2StrictCaps())) {
             Size streamSize = capture.getSize();
             streamer.writeVideoHeader(streamSize);
 
