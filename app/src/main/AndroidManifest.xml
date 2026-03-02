@@ -13,7 +13,7 @@
         android:theme="@style/AppTheme">
         <activity
             android:resizeableActivity="true"
-            android:name=".MainActivity"
+            android:name=".SettingsActivity"
             android:configChanges="keyboardHidden|orientation|screenSize"
             android:exported="true">
             <intent-filter>
@@ -22,6 +22,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:resizeableActivity="true"
+            android:name=".PlayerActivity"
+            android:configChanges="keyboardHidden|orientation|screenSize"
+            android:exported="false" />
         <service
             android:name=".Scrcpy"
             android:enabled="true"

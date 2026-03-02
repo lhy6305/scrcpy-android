@@ -16,11 +16,26 @@
     <string name="action_start">Start</string>
 
     <string name="status_connecting">Connecting...</string>
+    <string name="status_connecting_adb">Connecting (ADB)...</string>
+    <string name="status_opening_shell">Opening shell...</string>
+    <string name="status_waiting_shell">Waiting for shell prompt...</string>
+    <string name="status_pushing_server">Pushing server...</string>
+    <string name="status_starting_server">Starting server...</string>
+
     <string name="error_invalid_ip">Invalid IP address</string>
+    <string name="error_cancelled">Cancelled</string>
+    <string name="error_adb_invalid_host">Invalid host</string>
+    <string name="error_adb_connection_refused">ADB connection refused</string>
+    <string name="error_adb_no_route">No route to host</string>
+    <string name="error_adb_timeout">ADB timeout</string>
+    <string name="error_adb_io">ADB I/O error</string>
     <string name="error_connection_failed">Network or ADB connection failed</string>
     <string name="error_connection_timeout">Connection timed out</string>
     <string name="error_server_address_empty">Server address is empty</string>
     <string name="press_again_to_exit">Press again to exit</string>
+
+    <string name="action_cancel">Cancel</string>
+    <string name="action_retry">Retry</string>
     <string name="appswitch_button">=</string>
     <string name="home_button">o</string>
     <string name="back_button">v</string>

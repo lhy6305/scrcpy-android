@@ -18,16 +18,57 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
-        <TextView
-            android:id="@+id/text_connecting_overlay"
+        <LinearLayout
+            android:id="@+id/connection_overlay"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:background="#66000000"
             android:gravity="center"
-            android:text="@string/status_connecting"
-            android:textColor="@android:color/white"
-            android:textSize="16sp"
-            tools:visibility="visible" />
+            android:orientation="vertical"
+            android:padding="24dp"
+            tools:visibility="visible">
+
+            <ProgressBar
+                android:id="@+id/progress_stream_connecting"
+                style="?android:attr/progressBarStyleLarge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:indeterminate="true" />
+
+            <TextView
+                android:id="@+id/text_connection_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:gravity="center"
+                android:text="@string/status_connecting"
+                android:textColor="@android:color/white"
+                android:textSize="16sp" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/button_connection_cancel"
+                    style="?android:attr/buttonBarButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/action_cancel" />
+
+                <Button
+                    android:id="@+id/button_connection_retry"
+                    style="?android:attr/buttonBarButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:text="@string/action_retry"
+                    android:visibility="gone"
+                    tools:visibility="visible" />
+            </LinearLayout>
+        </LinearLayout>
     </FrameLayout>
 
     <LinearLayout

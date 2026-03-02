@@ -2,16 +2,21 @@ package org.las2mile.scrcpy;
 
 
 import static android.org.apache.commons.codec.binary.Base64.encodeBase64String;
+
 import android.content.Context;
 import android.util.Log;
+
 import com.tananaev.adblib.AdbBase64;
 import com.tananaev.adblib.AdbConnection;
 import com.tananaev.adblib.AdbCrypto;
 import com.tananaev.adblib.AdbStream;
+
 import java.io.IOException;
 import java.net.ConnectException;
+import java.net.InetSocketAddress;
 import java.net.NoRouteToHostException;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.NoSuchAlgorithmException;
@@ -20,15 +25,56 @@ import java.util.Locale;
 
 
 public class SendCommands {
-
-    private Thread thread = null;
-    private Context context;
-    private volatile int status;
-
-
-    public SendCommands() {
-
+    public enum Phase {
+        CONNECTING_ADB,
+        OPENING_SHELL,
+        WAITING_SHELL,
+        PUSHING_JAR,
+        STARTING_SERVER,
     }
+
+    public enum Error {
+        NONE,
+        CANCELLED,
+        INVALID_HOST,
+        CONNECTION_REFUSED,
+        NO_ROUTE,
+        TIMEOUT,
+        KEY_ERROR,
+        ADB_HANDSHAKE,
+        SHELL_OPEN_FAILED,
+        SHELL_PROMPT_TIMEOUT,
+        IO,
+        UNKNOWN,
+    }
+
+    public interface ProgressListener {
+        void onProgress(Phase phase);
+    }
+
+    public static final class Result {
+        public final boolean success;
+        public final Error error;
+        public final String message;
+
+        private Result(boolean success, Error error, String message) {
+            this.success = success;
+            this.error = error;
+            this.message = message;
+        }
+
+        public static Result ok() {
+            return new Result(true, Error.NONE, null);
+        }
+
+        public static Result fail(Error error, String message) {
+            return new Result(false, error, message);
+        }
+    }
+
+    private static final int CONNECT_TIMEOUT_MS = 5_000;
+    private static final int SOCKET_TIMEOUT_MS = 5_000;
+    private static final long PROMPT_TIMEOUT_MS = 10_000L;
 
     public static AdbBase64 getBase64Impl() {
         return new AdbBase64() {
@@ -39,36 +85,12 @@ public class SendCommands {
         };
     }
 
-    private AdbCrypto setupCrypto()
-            throws NoSuchAlgorithmException, IOException {
-
-        AdbCrypto c = null;
-        try {
-              c = AdbCrypto.loadAdbKeyPair(getBase64Impl(), context.getFileStreamPath("priv.key"), context.getFileStreamPath("pub.key"));
-        } catch (IOException | InvalidKeySpecException | NoSuchAlgorithmException | NullPointerException e) {
-            // Failed to read from file
-            c = null;
+    public Result sendAdbCommands(Context context, final byte[] fileBase64, final String ip, int bitrate, int maxSize,
+            int width, int height, boolean useAmlogicMode, int scid, ProgressListener listener) {
+        if (Thread.currentThread().isInterrupted()) {
+            return Result.fail(Error.CANCELLED, "Cancelled");
         }
 
-
-        if (c == null) {
-            // We couldn't load a key, so let's generate a new one
-            c = AdbCrypto.generateAdbKeyPair(getBase64Impl());
-            // Save it
-            c.saveAdbKeyPair(context.getFileStreamPath("priv.key"), context.getFileStreamPath("pub.key"));
-            //Generated new keypair
-        } else {
-            //Loaded existing keypair
-        }
-
-        return c;
-    }
-
-
-    public int SendAdbCommands(Context context, final byte[] fileBase64, final String ip, String localip, int bitrate, int size,
-            int width, int height, boolean useAmlogicMode, int scid) {
-        this.context = context;
-        status = 1;
         final StringBuilder command = new StringBuilder();
         command.append(" CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server 3.3.4");
         command.append(" log_level=info");
@@ -81,7 +103,7 @@ public class SendCommands {
         command.append(" video_bit_rate=").append(bitrate);
         command.append(" control=true");
         command.append(" tunnel_forward=true");
-        command.append(" max_size=").append(size);
+        command.append(" max_size=").append(maxSize);
         if (useAmlogicMode) {
             command.append(" amlogic_v4l2=true");
             command.append(" amlogic_v4l2_instance=1");
@@ -94,178 +116,188 @@ public class SendCommands {
         }
         command.append(";");
 
-        thread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    adbWrite(ip, fileBase64, command.toString());
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-            }
-        });
-        thread.start();
-        int count = 0;
-        while (status == 1 && count < 100) {
-            Log.e("ADB", "Connecting...");
-            try {
-                Thread.sleep(100);
-                count ++;
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+        try {
+            adbWrite(context, ip, fileBase64, command.toString(), listener);
+            return Result.ok();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Result.fail(Error.CANCELLED, "Cancelled");
+        } catch (UnknownHostException e) {
+            return Result.fail(Error.INVALID_HOST, e.getMessage());
+        } catch (ConnectException e) {
+            return Result.fail(Error.CONNECTION_REFUSED, e.getMessage());
+        } catch (NoRouteToHostException e) {
+            return Result.fail(Error.NO_ROUTE, e.getMessage());
+        } catch (SocketTimeoutException e) {
+            return Result.fail(Error.TIMEOUT, e.getMessage());
+        } catch (IOException e) {
+            return Result.fail(Error.IO, e.getMessage());
+        } catch (RuntimeException e) {
+            return Result.fail(Error.UNKNOWN, e.getMessage());
         }
-        if(count == 100){
-            status = 2;
-        }
-        return status;
     }
 
+    private static void report(ProgressListener listener, Phase phase) {
+        if (listener != null) {
+            listener.onProgress(phase);
+        }
+    }
 
-    private void adbWrite(String ip, byte[] fileBase64, String command) throws IOException {
+    private static void checkCancelled() throws InterruptedException {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException("Cancelled");
+        }
+    }
+
+    private static AdbCrypto setupCrypto(Context context) throws IOException {
+        AdbCrypto c;
+        try {
+            c = AdbCrypto.loadAdbKeyPair(getBase64Impl(), context.getFileStreamPath("priv.key"), context.getFileStreamPath("pub.key"));
+        } catch (IOException | InvalidKeySpecException | NoSuchAlgorithmException | NullPointerException e) {
+            // Failed to read from file
+            c = null;
+        }
+
+        if (c == null) {
+            // We couldn't load a key, so let's generate a new one
+            try {
+                c = AdbCrypto.generateAdbKeyPair(getBase64Impl());
+            } catch (NoSuchAlgorithmException e) {
+                throw new IOException("Failed to generate adb key pair", e);
+            }
+            // Save it
+            c.saveAdbKeyPair(context.getFileStreamPath("priv.key"), context.getFileStreamPath("pub.key"));
+        }
+
+        return c;
+    }
+
+    private static void adbWrite(Context context, String ip, byte[] fileBase64, String command, ProgressListener listener)
+            throws IOException, InterruptedException {
+        checkCancelled();
+        AdbCrypto crypto = setupCrypto(context);
+
+        report(listener, Phase.CONNECTING_ADB);
+        Socket sock = new Socket();
+        try {
+            sock.connect(new InetSocketAddress(ip, 5555), CONNECT_TIMEOUT_MS);
+            sock.setSoTimeout(SOCKET_TIMEOUT_MS);
+            Log.i("scrcpy", "ADB socket connection successful");
+        } catch (UnknownHostException e) {
+            throw new UnknownHostException(ip + " is not a valid host");
+        } catch (ConnectException e) {
+            throw new ConnectException("Device at " + ip + ":" + 5555 + " refused connection");
+        } catch (NoRouteToHostException e) {
+            throw new NoRouteToHostException("Couldn't find adb device at " + ip + ":" + 5555);
+        }
 
         AdbConnection adb = null;
-        Socket sock = null;
-        AdbCrypto crypto;
         AdbStream stream = null;
-
         try {
-            crypto = setupCrypto();
-        } catch (NoSuchAlgorithmException e) {
-            e.printStackTrace();
-            return;
-        } catch (IOException e) {
-            e.printStackTrace();
-            throw new IOException("Couldn't read/write keys");
+            adb = AdbConnection.create(sock, crypto);
+            adb.connect();
+        } catch (IOException | InterruptedException e) {
+            closeQuietly(sock);
+            throw e;
+        } catch (IllegalStateException e) {
+            closeQuietly(sock);
+            throw new IOException("ADB connection in illegal state", e);
         }
 
+        report(listener, Phase.OPENING_SHELL);
         try {
-            sock = new Socket(ip, 5555);
-            Log.e("scrcpy"," ADB socket connection successful");
-        } catch (UnknownHostException e) {
-            status = 2;
-            throw new UnknownHostException(ip + " is no valid ip address");
-        } catch (ConnectException e) {
-            status = 2;
-            throw new ConnectException("Device at " + ip + ":" + 5555 + " has no adb enabled or connection is refused");
-        } catch (NoRouteToHostException e) {
-            status = 2;
-            throw new NoRouteToHostException("Couldn't find adb device at " + ip + ":" + 5555);
-        } catch (IOException e) {
-            e.printStackTrace();
-            status = 2;
+            stream = adb.open("shell:");
+        } catch (IOException | InterruptedException e) {
+            throw e;
         }
 
-        if (sock != null && status ==1) {
-            try {
-                adb = AdbConnection.create(sock, crypto);
-                adb.connect();
-            } catch (IllegalStateException e) {
-                e.printStackTrace();
-            } catch (IOException | InterruptedException e) {
-                e.printStackTrace();
-                return;
+        report(listener, Phase.WAITING_SHELL);
+        stream.write(" \n");
+        if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+            throw new SocketTimeoutException("Timed out waiting for shell prompt");
+        }
+
+        report(listener, Phase.PUSHING_JAR);
+        int len = fileBase64.length;
+        byte[] filePart = new byte[4056];
+        int sourceOffset = 0;
+
+        stream.write(" command -v pkill >/dev/null 2>&1 && pkill -f com.genymobile.scrcpy.Server || true\n");
+        if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+            throw new SocketTimeoutException("Timed out waiting for shell prompt");
+        }
+        stream.write(" cd /data/local/tmp\n");
+        if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+            throw new SocketTimeoutException("Timed out waiting for shell prompt");
+        }
+        stream.write(" rm -f serverBase64\n");
+        if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+            throw new SocketTimeoutException("Timed out waiting for shell prompt");
+        }
+
+        while (sourceOffset < len) {
+            checkCancelled();
+            if (len - sourceOffset >= 4056) {
+                System.arraycopy(fileBase64, sourceOffset, filePart, 0, 4056);
+                sourceOffset = sourceOffset + 4056;
+                String serverBase64Part = new String(filePart, StandardCharsets.US_ASCII);
+                stream.write(" echo " + serverBase64Part + " >> serverBase64\n");
+                if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+                    throw new SocketTimeoutException("Timed out waiting for shell prompt");
+                }
+            } else {
+                int rem = len - sourceOffset;
+                byte[] remPart = new byte[rem];
+                System.arraycopy(fileBase64, sourceOffset, remPart, 0, rem);
+                sourceOffset = sourceOffset + rem;
+                String serverBase64Part = new String(remPart, StandardCharsets.US_ASCII);
+                stream.write(" echo " + serverBase64Part + " >> serverBase64\n");
+                if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+                    throw new SocketTimeoutException("Timed out waiting for shell prompt");
+                }
             }
         }
-
-        if (adb != null && status ==1) {
-
-            try {
-                stream = adb.open("shell:");
-            } catch (IOException | InterruptedException e) {
-                e.printStackTrace();
-                status = 2;
-                return;
-            }
+        stream.write(" base64 -d < serverBase64 > scrcpy-server.jar && rm serverBase64\n");
+        if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+            throw new SocketTimeoutException("Timed out waiting for shell prompt");
         }
 
-        if (stream != null && status ==1) {
-            try {
-                stream.write(" " + '\n');
-            } catch (IOException | InterruptedException e) {
-                e.printStackTrace();
-                return;
-            }
-        }
-
-
-        if (stream != null && status == 1) {
-            try {
-                if (!waitForPrompt(stream)) {
-                    status = 2;
-                    return;
-                }
-            } catch (InterruptedException e) {
-                status = 2;
-                Thread.currentThread().interrupt();
-                return;
-            }
-        }
-
-        if (stream != null && status ==1) {
-            int len = fileBase64.length;
-            byte[] filePart = new byte[4056];
-            int sourceOffset = 0;
-            try {
-                stream.write(" command -v pkill >/dev/null 2>&1 && pkill -f com.genymobile.scrcpy.Server || true" + '\n');
-                if (!waitForPrompt(stream)) {
-                    status = 2;
-                    return;
-                }
-                stream.write(" cd /data/local/tmp " + '\n');
-                if (!waitForPrompt(stream)) {
-                    status = 2;
-                    return;
-                }
-                while (sourceOffset < len) {
-                    if (len - sourceOffset >= 4056) {
-                        System.arraycopy(fileBase64, sourceOffset, filePart, 0, 4056);  //Writing in 4KB pieces. 4096-40  ---> 40 Bytes for actual command text.
-                        sourceOffset = sourceOffset + 4056;
-                        String ServerBase64part = new String(filePart, StandardCharsets.US_ASCII);
-                        stream.write(" echo " + ServerBase64part + " >> serverBase64" + '\n');
-                        if (!waitForPrompt(stream)) {
-                            status = 2;
-                            return;
-                        }
-                    } else {
-                        int rem = len - sourceOffset;
-                        byte[] remPart = new byte[rem];
-                        System.arraycopy(fileBase64, sourceOffset, remPart, 0, rem);
-                        sourceOffset = sourceOffset + rem;
-                        String ServerBase64part = new String(remPart, StandardCharsets.US_ASCII);
-                        stream.write(" echo " + ServerBase64part + " >> serverBase64" + '\n');
-                        if (!waitForPrompt(stream)) {
-                            status = 2;
-                            return;
-                        }
-                    }
-                }
-                stream.write(" base64 -d < serverBase64 > scrcpy-server.jar && rm serverBase64" + '\n');
-                if (!waitForPrompt(stream)) {
-                    status = 2;
-                    return;
-                }
-                stream.write(command + '\n');
-            } catch (IOException | InterruptedException e) {
-                e.printStackTrace();
-                status =2;
-                return;
-            }
-	}
-        if (status ==1) {
-            status = 0;
-        }
-
+        report(listener, Phase.STARTING_SERVER);
+        stream.write(command + '\n');
     }
 
-    private boolean waitForPrompt(AdbStream stream) throws IOException, InterruptedException {
-        while (true) {
+    private static void closeQuietly(Socket sock) {
+        if (sock == null) {
+            return;
+        }
+        try {
+            sock.close();
+        } catch (IOException ignore) {
+            // ignore
+        }
+    }
+
+    private static boolean waitForPrompt(AdbStream stream, long timeoutMs) throws IOException, InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        String tail = "";
+        while (System.currentTimeMillis() < deadline) {
+            checkCancelled();
             byte[] responseBytes = stream.read();
+            if (responseBytes == null || responseBytes.length == 0) {
+                continue;
+            }
             String response = new String(responseBytes, StandardCharsets.US_ASCII);
-            if (response.endsWith("$ ") || response.endsWith("# ")) {
+            String combined = tail + response;
+            if (combined.endsWith("$ ") || combined.endsWith("# ")) {
                 return true;
             }
+            if (combined.length() >= 2) {
+                tail = combined.substring(combined.length() - 2);
+            } else {
+                tail = combined;
+            }
         }
+        return false;
     }
 
 }

@@ -13,11 +13,24 @@
     <string name="action_start">开始</string>
 
     <string name="status_connecting">正在连接...</string>
+    <string name="status_connecting_adb">正在连接（ADB）...</string>
+    <string name="status_opening_shell">正在打开 shell...</string>
+    <string name="status_waiting_shell">正在等待 shell 提示符...</string>
+    <string name="status_pushing_server">正在推送服务端...</string>
+    <string name="status_starting_server">正在启动服务端...</string>
     <string name="error_invalid_ip">IP 地址不合法</string>
+    <string name="error_cancelled">已取消</string>
+    <string name="error_adb_invalid_host">设备地址不合法</string>
+    <string name="error_adb_connection_refused">ADB 连接被拒绝</string>
+    <string name="error_adb_no_route">无法访问目标设备</string>
+    <string name="error_adb_timeout">ADB 超时</string>
+    <string name="error_adb_io">ADB I/O 错误</string>
     <string name="error_connection_failed">网络或 ADB 连接失败</string>
     <string name="error_connection_timeout">连接超时</string>
     <string name="error_server_address_empty">设备地址为空</string>
     <string name="press_again_to_exit">再按一次退出</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_retry">重试</string>
 
     <string name="switch0">不控制（仅观看画面）</string>
     <string name="switch1">显示导航键（被控设备没有屏幕导航栏时使用）</string>

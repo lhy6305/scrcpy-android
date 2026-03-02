@@ -101,6 +101,7 @@ public class Scrcpy extends Service {
     private ServiceCallbacks serviceCallbacks;
     private final int[] remoteDevResolution = new int[2];
     private boolean socketStatus = false;
+    private final AtomicBoolean connectionReported = new AtomicBoolean(false);
     private final LinkedBlockingQueue<byte[]> controlQueue = new LinkedBlockingQueue<>(256);
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicReference<String> lastRemoteClipboardText = new AtomicReference<>();
@@ -140,6 +141,7 @@ public class Scrcpy extends Service {
         this.serverAdr = serverAdr;
         this.scid = scid;
         this.socketStatus = false;
+        notifyConnectionStateChanged(false);
         this.screenHeight = screenHeight;
         this.screenWidth = screenWidth;
         this.surface = surface;
@@ -166,6 +168,7 @@ public class Scrcpy extends Service {
         if (connectionThread != null) {
             connectionThread.interrupt();
         }
+        notifyConnectionStateChanged(false);
         stopVideoDecoder();
         stopSelf();
     }
@@ -249,6 +252,7 @@ public class Scrcpy extends Service {
 
                 attempts = 0;
                 socketStatus = true;
+                notifyConnectionStateChanged(true);
 
                 int codec = videoInputStream.readInt();
                 String videoMimeType = resolveVideoMime(codec);
@@ -325,6 +329,7 @@ public class Scrcpy extends Service {
                 }
             } catch (EOFException e) {
                 Log.i("scrcpy", "Connection closed");
+                notifyConnectionStateChanged(false);
                 if (attempts == 0) {
                     break;
                 }
@@ -337,12 +342,15 @@ public class Scrcpy extends Service {
             } catch (IOException e) {
                 attempts--;
                 if (attempts == 0) {
+                    notifyConnectionError(e.getMessage());
                     socketStatus = false;
+                    notifyConnectionStateChanged(false);
                     return;
                 }
                 sleepBeforeRetry();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                notifyConnectionStateChanged(false);
                 break;
             } finally {
                 stopThread(controlSender);
@@ -362,6 +370,7 @@ public class Scrcpy extends Service {
             }
         }
         socketStatus = false;
+        notifyConnectionStateChanged(false);
     }
 
     private AdbConnection openAdbConnection(String host) throws IOException, InterruptedException {
@@ -760,6 +769,26 @@ public class Scrcpy extends Service {
         if (callbacks != null) {
             mainHandler.post(() -> callbacks.onVideoSizeChanged(width, height));
         }
+    }
+
+    private void notifyConnectionStateChanged(boolean connected) {
+        boolean previous = connectionReported.getAndSet(connected);
+        if (previous == connected) {
+            return;
+        }
+        ServiceCallbacks callbacks = serviceCallbacks;
+        if (callbacks != null) {
+            mainHandler.post(() -> callbacks.onConnectionStateChanged(connected));
+        }
+    }
+
+    private void notifyConnectionError(String message) {
+        ServiceCallbacks callbacks = serviceCallbacks;
+        if (callbacks == null) {
+            return;
+        }
+        String nonNull = message == null ? "" : message;
+        mainHandler.post(() -> callbacks.onConnectionError(nonNull));
     }
 
     private String resolveVideoMime(int codecId) {
@@ -1274,6 +1303,10 @@ public class Scrcpy extends Service {
 
     public interface ServiceCallbacks {
         void onVideoSizeChanged(int width, int height);
+
+        void onConnectionStateChanged(boolean connected);
+
+        void onConnectionError(String message);
     }
 
     public class MyServiceBinder extends Binder {
