@@ -45,6 +45,8 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
     private boolean droppingFrames;
     private long droppedFrameCount;
     private long lastSyncFrameRequestMs;
+    private long driftBasePtsUs = Long.MIN_VALUE;
+    private long driftBaseNowUs;
 
     public AmlogicV4l2CaptureProcessor(Streamer streamer, Options options) {
         this.streamer = streamer;
@@ -369,6 +371,8 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
         droppingFrames = false;
         droppedFrameCount = 0;
         lastSyncFrameRequestMs = 0;
+        driftBasePtsUs = Long.MIN_VALUE;
+        driftBaseNowUs = 0;
     }
 
     private int keepLatestFrame(AmlogicV4l2CaptureNative capture, ByteBuffer frameBuffer, AmlogicV4l2CaptureNative.FrameMetadata metadata,
@@ -399,11 +403,7 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
     }
 
     private boolean shouldDropFrame(MediaCodec codec, long ptsUs, boolean keyFrame, String path) {
-        long nowUs = System.nanoTime() / 1_000;
-        long lateUs = nowUs - ptsUs;
-        if (lateUs < 0) {
-            lateUs = 0;
-        }
+        long lateUs = computeLatencyDriftUs(ptsUs);
 
         long nowMs = SystemClock.elapsedRealtime();
 
@@ -433,6 +433,20 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
         }
 
         return false;
+    }
+
+    private long computeLatencyDriftUs(long ptsUs) {
+        long nowUs = System.nanoTime() / 1_000;
+        if (driftBasePtsUs == Long.MIN_VALUE || ptsUs < driftBasePtsUs) {
+            driftBasePtsUs = ptsUs;
+            driftBaseNowUs = nowUs;
+            return 0;
+        }
+
+        long elapsedPts = ptsUs - driftBasePtsUs;
+        long elapsedNow = nowUs - driftBaseNowUs;
+        long driftUs = elapsedNow - elapsedPts;
+        return driftUs > 0 ? driftUs : 0;
     }
 
     private void maybeRequestSyncFrame(MediaCodec codec, long nowMs, String path) {

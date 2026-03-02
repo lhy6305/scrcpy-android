@@ -395,7 +395,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
 
     private void updateNavVisibility() {
         if (navButtonBar != null) {
-            navButtonBar.setVisibility(nav && !noControl ? View.VISIBLE : View.GONE);
+            navButtonBar.setVisibility(navBarVisible && inputEnabled ? View.VISIBLE : View.GONE);
         }
     }
 
@@ -405,13 +405,15 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             return;
         }
 
-        if (!noControl) {
+        if (inputEnabled) {
             surfaceView.setOnTouchListener((v, event) -> scrcpy.touchevent(event, surfaceView.getWidth(), surfaceView.getHeight()));
         } else {
             surfaceView.setOnTouchListener(null);
         }
 
-        if (nav && !noControl) {
+        updateNavVisibility();
+
+        if (navBarVisible && inputEnabled) {
             final Button backButton = findViewById(R.id.back_button);
             final Button homeButton = findViewById(R.id.home_button);
             final Button appswitchButton = findViewById(R.id.appswitch_button);
