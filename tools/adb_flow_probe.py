@@ -289,7 +289,7 @@ def main() -> int:
         default=0.3,
         help="seconds between reconnect-with-restart retries",
     )
-    parser.add_argument("--skip-launch-test", action="store_true", help="skip launcher app start simulation")
+    parser.add_argument("--launch-test", action="store_true", help="also simulate launcher app start (default: off)")
     args = parser.parse_args()
 
     script_path = Path(__file__).resolve()
@@ -427,7 +427,7 @@ def main() -> int:
             log(f"agent version output: {out_ver.strip()}")
             log(f"agent list apps: {app_count}")
 
-            if not args.skip_launch_test:
+            if args.launch_test:
                 first_app = parse_first_app(out_list)
                 if first_app is None:
                     log("launcher start probe skipped: no APP entry in list output")
@@ -465,6 +465,8 @@ def main() -> int:
                             ).stdout
                             launcher_start_ok = is_monkey_success(out_launcher)
                             log(f"launcher LAUNCHER monkey start: {'OK' if launcher_start_ok else 'FAIL'}")
+            else:
+                log("launcher start probe: skipped (enable with --launch-test)")
 
         log("probe completed")
         return 0

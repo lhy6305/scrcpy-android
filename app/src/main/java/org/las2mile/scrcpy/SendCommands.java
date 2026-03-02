@@ -116,17 +116,6 @@ public class SendCommands {
         return command.toString();
     }
 
-    private static String buildDetachedShellCommand(String command) {
-        String trimmed = command != null ? command.trim() : "";
-        if (trimmed.endsWith(";")) {
-            trimmed = trimmed.substring(0, trimmed.length() - 1);
-        }
-        if (trimmed.isEmpty()) {
-            return "";
-        }
-        return "(" + trimmed + ") >/dev/null 2>&1 &";
-    }
-
     public Result sendAdbCommands(Context context, final byte[] fileBase64, final String ip, int bitrate, int maxSize,
             int width, int height, boolean useAmlogicMode, int scid, ProgressListener listener) {
         if (Thread.currentThread().isInterrupted()) {
@@ -163,10 +152,9 @@ public class SendCommands {
             return Result.fail(Error.CANCELLED, "Cancelled");
         }
 
-        // Start-only path must also detach; otherwise shell prompt won't return until server exits.
-        final String command = buildDetachedShellCommand(
-                buildServerStartCommand(bitrate, maxSize, width, height, useAmlogicMode, scid)
-        );
+        // Use the same non-detached server start style as initial deploy for vendor shells
+        // that bind process lifetime to the launching shell/session.
+        final String command = buildServerStartCommand(bitrate, maxSize, width, height, useAmlogicMode, scid);
 
         // Some devices are very sensitive to reconnect timing (especially when ADB over TCP is single-connection).
         // Retry a few times to let the previous connection fully close.
@@ -381,34 +369,41 @@ public class SendCommands {
             closeQuietly(sock);
             throw new IOException("ADB connection in illegal state", e);
         }
+        boolean keepOpen = false;
+        try {
+            report(listener, Phase.OPENING_SHELL);
+            stream = adb.open("shell:");
 
-        report(listener, Phase.OPENING_SHELL);
-        stream = adb.open("shell:");
+            report(listener, Phase.WAITING_SHELL);
+            stream.write(" \n");
+            if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+                throw new SocketTimeoutException("Timed out waiting for shell prompt");
+            }
 
-        report(listener, Phase.WAITING_SHELL);
-        stream.write(" \n");
-        if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-            throw new SocketTimeoutException("Timed out waiting for shell prompt");
+            stream.write(" command -v pkill >/dev/null 2>&1 && pkill -f com.genymobile.scrcpy.Server || true\n");
+            if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+                throw new SocketTimeoutException("Timed out waiting for shell prompt");
+            }
+            stream.write(" cd /data/local/tmp\n");
+            if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
+                throw new SocketTimeoutException("Timed out waiting for shell prompt");
+            }
+
+            report(listener, Phase.STARTING_SERVER);
+            stream.write(command + '\n');
+
+            // Keep channel open for non-detached command to preserve historical working behavior.
+            keepOpen = command != null && !command.startsWith("(");
+            if (!keepOpen) {
+                Thread.sleep(120);
+            }
+        } finally {
+            if (!keepOpen) {
+                closeQuietly(stream);
+                closeQuietly(adb);
+                closeQuietly(sock);
+            }
         }
-
-        stream.write(" command -v pkill >/dev/null 2>&1 && pkill -f com.genymobile.scrcpy.Server || true\n");
-        if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-            throw new SocketTimeoutException("Timed out waiting for shell prompt");
-        }
-        stream.write(" cd /data/local/tmp\n");
-        if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-            throw new SocketTimeoutException("Timed out waiting for shell prompt");
-        }
-
-        report(listener, Phase.STARTING_SERVER);
-        stream.write(command + '\n');
-        // Do not wait for prompt here: some devices keep shell output blocked for background jobs.
-        Thread.sleep(120);
-
-        // The start command is detached; we can safely close the shell channel now.
-        closeQuietly(stream);
-        closeQuietly(adb);
-        closeQuietly(sock);
     }
 
     private static void closeQuietly(Socket sock) {

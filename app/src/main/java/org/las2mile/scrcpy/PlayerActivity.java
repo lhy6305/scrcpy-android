@@ -742,10 +742,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         launcherExecutor.submit(() -> {
             try {
                 ensureAgentDeployed();
-                AdbConnection adb = getAdbForTools();
-                String out = adb != null
-                        ? ApkViewerAgentClient.execAgent(adb, "clip-get")
-                        : ApkViewerAgentClient.execAgent(PlayerActivity.this, serverAdr, "clip-get");
+                String out = execAgentWithFallback("clip-get");
                 String text = parseClipGet(out);
                 if (text == null) {
                     runOnUiThread(() -> Toast.makeText(PlayerActivity.this, R.string.toast_remote_clipboard_empty, Toast.LENGTH_SHORT).show());
@@ -969,10 +966,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         launcherListFuture = launcherExecutor.submit(() -> {
             try {
                 ensureAgentDeployed();
-                AdbConnection adb = getAdbForTools();
-                String output = adb != null
-                        ? ApkViewerAgentClient.execAgent(adb, "list")
-                        : ApkViewerAgentClient.execAgent(PlayerActivity.this, serverAdr, "list");
+                String output = execAgentWithFallback("list");
                 List<LauncherApp> apps = parseAppList(output);
                 runOnUiThread(() -> {
                     if (isFinishing()) {
@@ -1106,10 +1100,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
                     for (String pkg : batch) {
                         args.append(' ').append(pkg);
                     }
-                    AdbConnection adb = getAdbForTools();
-                    String out = adb != null
-                            ? ApkViewerAgentClient.execAgent(adb, args.toString())
-                            : ApkViewerAgentClient.execAgent(PlayerActivity.this, serverAdr, args.toString());
+                    String out = execAgentWithFallback(args.toString());
                     applyIconOutput(out, sizePx);
                     runOnUiThread(() -> {
                         if (launcherAdapter != null) {
@@ -1175,12 +1166,9 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
     }
 
     private void ensureAgentDeployed() throws IOException, InterruptedException {
-        AdbConnection adb = getAdbForTools();
         if (agentDeployed) {
             try {
-                String out = adb != null
-                        ? ApkViewerAgentClient.execAgent(adb, "--version")
-                        : ApkViewerAgentClient.execAgent(this, serverAdr, "--version");
+                String out = execAgentWithFallback("--version");
                 if (isAgentVersionOk(out)) {
                     return;
                 }
@@ -1191,16 +1179,19 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         }
 
         byte[] base64 = loadAssetBase64(ApkViewerAgentClient.ASSET_NAME);
+        AdbConnection adb = getAdbForTools();
         if (adb != null) {
-            ApkViewerAgentClient.deploy(adb, base64, null);
+            try {
+                ApkViewerAgentClient.deploy(adb, base64, null);
+            } catch (IOException e) {
+                ApkViewerAgentClient.deploy(this, serverAdr, base64, null);
+            }
         } else {
             ApkViewerAgentClient.deploy(this, serverAdr, base64, null);
         }
 
         // Ensure the remote jar is valid and runnable (e.g. base64 command might be missing on some ROMs).
-        String out = adb != null
-                ? ApkViewerAgentClient.execAgent(adb, "--version")
-                : ApkViewerAgentClient.execAgent(this, serverAdr, "--version");
+        String out = execAgentWithFallback("--version");
         if (!isAgentVersionOk(out)) {
             throw new IOException("apkviewer-agent verify failed");
         }
@@ -1212,6 +1203,30 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             return null;
         }
         return scrcpy.getAdbConnectionForTools();
+    }
+
+    private String execAgentWithFallback(String args) throws IOException, InterruptedException {
+        AdbConnection adb = getAdbForTools();
+        if (adb != null) {
+            try {
+                return ApkViewerAgentClient.execAgent(adb, args);
+            } catch (IOException ignore) {
+                // Fall back to a new ADB session for robustness.
+            }
+        }
+        return ApkViewerAgentClient.execAgent(this, serverAdr, args);
+    }
+
+    private String execShellWithFallback(String command) throws IOException, InterruptedException {
+        AdbConnection adb = getAdbForTools();
+        if (adb != null) {
+            try {
+                return ApkViewerAgentClient.exec(adb, command);
+            } catch (IOException ignore) {
+                // Fall back to a new ADB session for robustness.
+            }
+        }
+        return ApkViewerAgentClient.exec(this, serverAdr, command);
     }
 
     private static boolean isAgentVersionOk(String output) {
@@ -1305,27 +1320,20 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             try {
                 // Explicit component start. This matches a launcher icon click best on TV boxes.
                 String cmd = "am start -n " + app.component;
-                AdbConnection adb = getAdbForTools();
-                String out = adb != null
-                        ? ApkViewerAgentClient.exec(adb, cmd)
-                        : ApkViewerAgentClient.exec(PlayerActivity.this, serverAdr, cmd);
+                String out = execShellWithFallback(cmd);
                 if (isAmStartSuccess(out)) {
                     return;
                 }
 
                 // Fallback: some apps might not start via explicit component (or component changed).
-                String outLeanback = adb != null
-                        ? ApkViewerAgentClient.exec(adb, "monkey -p " + app.packageName + " -c android.intent.category.LEANBACK_LAUNCHER 1")
-                        : ApkViewerAgentClient.exec(PlayerActivity.this, serverAdr,
-                                "monkey -p " + app.packageName + " -c android.intent.category.LEANBACK_LAUNCHER 1");
+                String outLeanback = execShellWithFallback(
+                        "monkey -p " + app.packageName + " -c android.intent.category.LEANBACK_LAUNCHER 1");
                 if (isMonkeySuccess(outLeanback)) {
                     return;
                 }
 
-                String outLauncher = adb != null
-                        ? ApkViewerAgentClient.exec(adb, "monkey -p " + app.packageName + " -c android.intent.category.LAUNCHER 1")
-                        : ApkViewerAgentClient.exec(PlayerActivity.this, serverAdr,
-                                "monkey -p " + app.packageName + " -c android.intent.category.LAUNCHER 1");
+                String outLauncher = execShellWithFallback(
+                        "monkey -p " + app.packageName + " -c android.intent.category.LAUNCHER 1");
                 if (isMonkeySuccess(outLauncher)) {
                     return;
                 }
