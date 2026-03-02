@@ -26,6 +26,8 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
     private static final int DEFAULT_I_FRAME_INTERVAL = 10;
     private static final int DEFAULT_FRAME_RATE = 30;
     private static final String KEY_MAX_FPS_TO_ENCODER = "max-fps-to-encoder";
+    private static final long AUTO_RESET_STALL_MS = 3000;
+    private static final long AUTO_RESET_STARTUP_STALL_MS = 8000;
 
     private final Streamer streamer;
     private final Options options;
@@ -115,16 +117,26 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
         ByteBuffer frameBuffer = ByteBuffer.allocateDirect(Math.max(capture.getFrameCapacity(), 1));
         AmlogicV4l2CaptureNative.FrameMetadata metadata = new AmlogicV4l2CaptureNative.FrameMetadata();
         boolean configSent = false;
+        boolean hasMediaFrame = false;
+        long lastFrameTsMs = System.currentTimeMillis();
 
         while (!stopped.get() && !resetRequested.get()) {
             frameBuffer.clear();
             int packetSize = capture.readFrame(frameBuffer, metadata);
             if (packetSize == AmlogicV4l2CaptureNative.EAGAIN) {
+                if (checkAndRequestResetOnStall("h264", hasMediaFrame, lastFrameTsMs)) {
+                    break;
+                }
                 continue;
             }
             if (packetSize <= 0) {
+                if (checkAndRequestResetOnStall("h264", hasMediaFrame, lastFrameTsMs)) {
+                    break;
+                }
                 continue;
             }
+            hasMediaFrame = true;
+            lastFrameTsMs = System.currentTimeMillis();
 
             try {
                 frameBuffer.position(0);
@@ -190,6 +202,8 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
             int statEagain = 0;
             int statZero = 0;
             int statPositive = 0;
+            boolean hasMediaFrame = false;
+            long lastFrameTsMs = System.currentTimeMillis();
 
             while (!stopped.get() && !resetRequested.get()) {
                 rawFrameBuffer.clear();
@@ -198,6 +212,9 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
                     ++statEagain;
                     drainEncoder(codec, bufferInfo, outputDebugCount);
                     long now = System.currentTimeMillis();
+                    if (checkAndRequestResetOnStall("raw", hasMediaFrame, lastFrameTsMs, now)) {
+                        break;
+                    }
                     if (now >= statNextLogMs) {
                         Ln.i("Amlogic raw stats: ok=" + statPositive + ", eagain=" + statEagain + ", zero=" + statZero);
                         statNextLogMs = now + 1000;
@@ -208,6 +225,9 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
                     ++statZero;
                     drainEncoder(codec, bufferInfo, outputDebugCount);
                     long now = System.currentTimeMillis();
+                    if (checkAndRequestResetOnStall("raw", hasMediaFrame, lastFrameTsMs, now)) {
+                        break;
+                    }
                     if (now >= statNextLogMs) {
                         Ln.i("Amlogic raw stats: ok=" + statPositive + ", eagain=" + statEagain + ", zero=" + statZero);
                         statNextLogMs = now + 1000;
@@ -215,6 +235,8 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
                     continue;
                 }
                 ++statPositive;
+                hasMediaFrame = true;
+                lastFrameTsMs = System.currentTimeMillis();
                 if (statPositive <= 3) {
                     Ln.i("Amlogic raw frame #" + statPositive + ", size=" + rawSize + ", pts=" + metadata.ptsUs);
                 }
@@ -252,6 +274,23 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
             }
             codec.release();
         }
+    }
+
+    private boolean checkAndRequestResetOnStall(String path, boolean hasMediaFrame, long lastFrameTsMs) {
+        return checkAndRequestResetOnStall(path, hasMediaFrame, lastFrameTsMs, System.currentTimeMillis());
+    }
+
+    private boolean checkAndRequestResetOnStall(String path, boolean hasMediaFrame, long lastFrameTsMs, long nowMs) {
+        long threshold = hasMediaFrame ? AUTO_RESET_STALL_MS : AUTO_RESET_STARTUP_STALL_MS;
+        long stallMs = nowMs - lastFrameTsMs;
+        if (stallMs < threshold) {
+            return false;
+        }
+
+        if (resetRequested.compareAndSet(false, true)) {
+            Ln.w("Amlogic V4L2 " + path + " capture stalled for " + stallMs + "ms, request auto-reset");
+        }
+        return true;
     }
 
     private void drainEncoder(MediaCodec codec, MediaCodec.BufferInfo bufferInfo, int[] outputDebugCount) throws IOException {

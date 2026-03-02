@@ -17,6 +17,17 @@
             android:id="@+id/decoder_surface"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
+
+        <TextView
+            android:id="@+id/text_connecting_overlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#66000000"
+            android:gravity="center"
+            android:text="@string/status_connecting"
+            android:textColor="@android:color/white"
+            android:textSize="16sp"
+            tools:visibility="visible" />
     </FrameLayout>
 
     <LinearLayout

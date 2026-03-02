@@ -17,7 +17,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.SystemClock;
-import android.provider.Settings;
 import android.util.Base64;
 import android.util.Log;
 import android.view.Gravity;
@@ -34,8 +33,10 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.Spinner;
 import android.widget.Switch;
+import android.widget.TextView;
 import android.widget.Toast;
 import java.io.IOException;
 import java.io.InputStream;
@@ -58,7 +59,7 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
     private static int screenWidth;
     private static int screenHeight;
     private static boolean first_time = true;
-    private static boolean serviceBound = false;
+    private static volatile boolean serviceBound = false;
     private static boolean nav = false;
     SensorManager sensorManager;
     private SendCommands sendCommands;
@@ -87,33 +88,52 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
             scrcpy = ((Scrcpy.MyServiceBinder) iBinder).getService();
             scrcpy.setServiceCallbacks(MainActivity.this);
             serviceBound = true;
-           if (first_time) {
+            if (first_time) {
                 scrcpy.start(surface, serverAdr, screenHeight, screenWidth, sessionScid);
-               int count = 100;
-               while (count!=0 && !scrcpy.check_socket_connection()){
-                   count --;
-                   try {
-                       Thread.sleep(100);
-                   } catch (InterruptedException e) {
-                       e.printStackTrace();
-                   }
-               }
-               if (count == 0){
-                   if (serviceBound) {
-                       scrcpy.StopService();
-                       unbindService(serviceConnection);
-                       serviceBound = false;
-                       scrcpy_main();
-                   }
-                   Toast.makeText(context, "Connection Timed out", Toast.LENGTH_SHORT).show();
-               }else{
-               int[] rem_res = scrcpy.get_remote_device_resolution();
-               if (rem_res[0] > 0 && rem_res[1] > 0) {
-                   remote_device_width = rem_res[0];
-                   remote_device_height = rem_res[1];
-               }
-               first_time = false;
-               }
+
+                // Wait for scrcpy socket connection off the UI thread (avoid ANR).
+                new Thread(() -> {
+                    int count = 100;
+                    while (count != 0 && serviceBound && scrcpy != null && !scrcpy.check_socket_connection()) {
+                        count--;
+                        try {
+                            Thread.sleep(100);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+
+                    final boolean connected = serviceBound && scrcpy != null && scrcpy.check_socket_connection();
+                    runOnUiThread(() -> {
+                        if (!connected) {
+                            if (serviceBound && scrcpy != null) {
+                                scrcpy.StopService();
+                                try {
+                                    unbindService(serviceConnection);
+                                } catch (IllegalArgumentException ignore) {
+                                    // ignore
+                                }
+                                serviceBound = false;
+                            }
+                            scrcpy_main();
+                            Toast.makeText(MainActivity.this, R.string.error_connection_timeout, Toast.LENGTH_SHORT).show();
+                            return;
+                        }
+
+                        if (!serviceBound || scrcpy == null) {
+                            return;
+                        }
+
+                        int[] remRes = scrcpy.get_remote_device_resolution();
+                        if (remRes[0] > 0 && remRes[1] > 0) {
+                            remote_device_width = remRes[0];
+                            remote_device_height = remRes[1];
+                        }
+                        first_time = false;
+                        set_display_nd_touch();
+                    });
+                }, "scrcpy-conn-wait").start();
             } else {
                 scrcpy.setParms(surface, screenWidth, screenHeight);
             }
@@ -151,7 +171,8 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
 //        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         setContentView(R.layout.activity_main);
         final Button startButton = findViewById(R.id.button_start);
-        final Button floatButton = findViewById(R.id.button_start_float);
+        final EditText editTextServerHost = findViewById(R.id.editText_server_host);
+        setConnectingUi(false);
         AssetManager assetManager = getAssets();
         try {
             InputStream input_Stream = assetManager.open("scrcpy-server.jar");
@@ -166,43 +187,51 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
         startButton.setOnClickListener(v -> {
             local_ip = wifiIpAddress();
             getAttributes();
-            if (!serverAdr.isEmpty()) {
-                sessionScid = generateScid();
-                if (sendCommands.SendAdbCommands(context, fileBase64, serverAdr, local_ip, videoBitrate, Math.max(screenHeight, screenWidth),
-                        screenWidth, screenHeight, use_amlogic_mode, sessionScid) == 0) {
-                    start_screen_copy_magic();
-                } else {
-                    Toast.makeText(context, "Network OR ADB connection failed", Toast.LENGTH_SHORT).show();
-                }
-            } else {
-                Toast.makeText(context, "Server Address Empty", Toast.LENGTH_SHORT).show();
+            if (serverAdr == null || serverAdr.isEmpty()) {
+                Toast.makeText(MainActivity.this, R.string.error_server_address_empty, Toast.LENGTH_SHORT).show();
+                return;
             }
-        });
+            if (!isValidIpv4(serverAdr)) {
+                if (editTextServerHost != null) {
+                    editTextServerHost.setError(getString(R.string.error_invalid_ip));
+                }
+                Toast.makeText(MainActivity.this, R.string.error_invalid_ip, Toast.LENGTH_SHORT).show();
+                return;
+            }
 
-        floatButton.setOnClickListener(v->{
-            getAttributes();
-            showDisplayWindow();
+            setConnectingUi(true);
+            sessionScid = generateScid();
+            new Thread(() -> {
+                int status = sendCommands.SendAdbCommands(context, fileBase64, serverAdr, local_ip, videoBitrate, Math.max(screenHeight, screenWidth),
+                        screenWidth, screenHeight, use_amlogic_mode, sessionScid);
+                runOnUiThread(() -> {
+                    setConnectingUi(false);
+                    if (status == 0) {
+                        start_screen_copy_magic();
+                    } else {
+                        Toast.makeText(MainActivity.this, R.string.error_connection_failed, Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }, "scrcpy-adb-send").start();
         });
         get_saved_preferences();
     }
 
-    private void showDisplayWindow() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            if (!Settings.canDrawOverlays(this)) {
-                //启动Activity让用户授权
-                Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION);
-                startActivity(intent);
-                return;
-            }
+    private void setConnectingUi(boolean connecting) {
+        Button startButton = findViewById(R.id.button_start);
+        ProgressBar progressBar = findViewById(R.id.progress_connecting);
+        TextView statusText = findViewById(R.id.text_status);
+
+        if (startButton != null) {
+            startButton.setEnabled(!connecting);
         }
-        Intent it = new Intent(this,FloatService.class);
-        it.putExtra("ip",serverAdr);
-        it.putExtra("w",screenWidth);
-        it.putExtra("h",screenHeight);
-        it.putExtra("b",videoBitrate);
-        it.putExtra("amlogic_mode", use_amlogic_mode);
-        startService(it);
-        finish();
+        if (progressBar != null) {
+            progressBar.setVisibility(connecting ? View.VISIBLE : View.GONE);
+        }
+        if (statusText != null) {
+            statusText.setVisibility(connecting ? View.VISIBLE : View.GONE);
+            statusText.setText(connecting ? R.string.status_connecting : "");
+        }
     }
 
 
@@ -359,7 +388,7 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
     private void getAttributes() {
 
         final EditText editTextServerHost = findViewById(R.id.editText_server_host);
-        serverAdr = editTextServerHost.getText().toString();
+        serverAdr = editTextServerHost != null ? editTextServerHost.getText().toString().trim() : "";
         context.getSharedPreferences(PREFERENCE_KEY, 0).edit().putString("Server Address", serverAdr).apply();
         final Spinner videoResolutionSpinner = findViewById(R.id.spinner_video_resolution);
         final Spinner videoBitrateSpinner = findViewById(R.id.spinner_video_bitrate);
@@ -462,6 +491,31 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
         return SCID_RANDOM.nextInt() & 0x7fffffff;
     }
 
+    private static boolean isValidIpv4(String host) {
+        if (host == null) {
+            return false;
+        }
+        String[] parts = host.split("\\.");
+        if (parts.length != 4) {
+            return false;
+        }
+        for (String part : parts) {
+            if (part.isEmpty() || part.length() > 3) {
+                return false;
+            }
+            int value;
+            try {
+                value = Integer.parseInt(part);
+            } catch (NumberFormatException e) {
+                return false;
+            }
+            if (value < 0 || value > 255) {
+                return false;
+            }
+        }
+        return true;
+    }
+
 
     private void start_Scrcpy_service() {
         Intent intent = new Intent(this, Scrcpy.class);
@@ -473,14 +527,16 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
     public void onVideoSizeChanged(int width, int height) {
         remote_device_width = width;
         remote_device_height = height;
-        if (!first_time) {
-            runOnUiThread(() -> {
-                syncOrientationWithRemote();
-                applyImmersiveMode();
-                updateVideoViewportInsets();
-                applySurfaceAspectRatio();
-            });
-        }
+        runOnUiThread(() -> {
+            TextView connectingOverlay = findViewById(R.id.text_connecting_overlay);
+            if (connectingOverlay != null) {
+                connectingOverlay.setVisibility(View.GONE);
+            }
+            syncOrientationWithRemote();
+            applyImmersiveMode();
+            updateVideoViewportInsets();
+            applySurfaceAspectRatio();
+        });
     }
 
     @Override
@@ -548,21 +604,33 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
         }
     }
 
+    private void stopScrcpyServiceIfRunning() {
+        if (!serviceBound) {
+            return;
+        }
+        if (scrcpy != null) {
+            scrcpy.StopService();
+        }
+        try {
+            unbindService(serviceConnection);
+        } catch (IllegalArgumentException ignore) {
+            // ignore
+        }
+        serviceBound = false;
+    }
+
     @Override
     public void onBackPressed() {
         if (timestamp == 0) {
             timestamp = SystemClock.uptimeMillis();
-            Toast.makeText(context, "Press again to exit", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, R.string.press_again_to_exit, Toast.LENGTH_SHORT).show();
         } else {
             long now = SystemClock.uptimeMillis();
             if (now < timestamp + 1000) {
                 timestamp = 0;
-                if (serviceBound) {
-                    scrcpy.StopService();
-                    unbindService(serviceConnection);
-                }
-                android.os.Process.killProcess(android.os.Process.myPid());
-                System.exit(1);
+                stopScrcpyServiceIfRunning();
+                finish();
+                return;
             }
             timestamp = 0;
         }

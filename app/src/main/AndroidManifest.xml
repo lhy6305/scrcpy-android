@@ -3,8 +3,6 @@
 
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <uses-permission android:name="android.permission.SYSTEM_OVERLAY_WINDOW"/>
 
     <application
         android:allowBackup="true"
@@ -27,8 +25,7 @@
         <service
             android:name=".Scrcpy"
             android:enabled="true"
-            android:exported="true"></service>
-        <service android:name=".FloatService" />
+            android:exported="false" />
     </application>
 
 </manifest>

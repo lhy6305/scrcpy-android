@@ -1,0 +1,25 @@
+<resources>
+    <string name="help_wireless_debug">要使用 scrcpy-lite，请在被控设备开启无线调试。\nADB 命令：adb tcpip 5555\n\n横屏时请向下滚动。</string>
+
+    <string name="label_server_ip">设备 IP 地址</string>
+    <string name="hint_server_ip">例如：192.168.0.73</string>
+
+    <string name="label_video_resolution">分辨率</string>
+    <string name="label_video_resolution_desc">传输分辨率（影响清晰度与延迟）</string>
+
+    <string name="label_video_bitrate">码率</string>
+    <string name="label_video_bitrate_desc">码率（影响清晰度与延迟）</string>
+
+    <string name="action_start">开始</string>
+
+    <string name="status_connecting">正在连接...</string>
+    <string name="error_invalid_ip">IP 地址不合法</string>
+    <string name="error_connection_failed">网络或 ADB 连接失败</string>
+    <string name="error_connection_timeout">连接超时</string>
+    <string name="error_server_address_empty">设备地址为空</string>
+    <string name="press_again_to_exit">再按一次退出</string>
+
+    <string name="switch0">不控制（仅观看画面）</string>
+    <string name="switch1">显示导航键（被控设备没有屏幕导航栏时使用）</string>
+    <string name="switch2">Amlogic 设备专用模式</string>
+</resources>

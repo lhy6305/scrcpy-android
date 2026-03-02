@@ -1,11 +1,26 @@
 <resources>
     <string name="app_name">scrcpy-lite</string>
 
-    <string name="label_server_ip">Remote Device IP address</string>
+    <string name="help_wireless_debug">To use scrcpy-lite, enable wireless debugging on the remote device.\nADB: adb tcpip 5555\n\nIf in landscape, scroll down.</string>
+
+    <string name="label_server_ip">Remote device IP address</string>
+    <string name="hint_server_ip">Example: 192.168.0.73</string>
+
     <string name="label_video_resolution">Resolution</string>
+    <string name="label_video_resolution_desc">Streaming resolution (affects quality and latency)</string>
+
     <string name="label_video_bitrate">Bitrate</string>
+    <string name="label_video_bitrate_desc">Bitrate (affects quality and latency)</string>
+
     <string name="label_x">x</string>
     <string name="action_start">Start</string>
+
+    <string name="status_connecting">Connecting...</string>
+    <string name="error_invalid_ip">Invalid IP address</string>
+    <string name="error_connection_failed">Network or ADB connection failed</string>
+    <string name="error_connection_timeout">Connection timed out</string>
+    <string name="error_server_address_empty">Server address is empty</string>
+    <string name="press_again_to_exit">Press again to exit</string>
     <string name="appswitch_button">=</string>
     <string name="home_button">o</string>
     <string name="back_button">v</string>

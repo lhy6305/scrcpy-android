@@ -23,7 +23,7 @@ public class SendCommands {
 
     private Thread thread = null;
     private Context context;
-    private int status;
+    private volatile int status;
 
 
     public SendCommands() {
