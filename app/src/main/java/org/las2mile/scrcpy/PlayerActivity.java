@@ -58,6 +58,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
+import java.net.ConnectException;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.ArrayList;
@@ -1351,14 +1352,37 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         if (e == null) {
             return false;
         }
-        String msg = e.getMessage();
-        if (msg == null || msg.isEmpty()) {
-            return false;
+        if (hasCauseType(e, ConnectException.class)) {
+            return true;
         }
-        String lower = msg.toLowerCase(Locale.ROOT);
-        return lower.contains("stream open actively rejected")
-                || lower.contains("stream closed")
-                || lower.contains("stream open rejected");
+        return hasAdblibIoCause(e);
+    }
+
+    private static boolean hasCauseType(Throwable error, Class<? extends Throwable> type) {
+        Throwable current = error;
+        while (current != null) {
+            if (type.isInstance(current)) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private static boolean hasAdblibIoCause(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof IOException) {
+                for (StackTraceElement frame : current.getStackTrace()) {
+                    String className = frame.getClassName();
+                    if (className != null && className.startsWith("com.tananaev.adblib.")) {
+                        return true;
+                    }
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private String execAgentViaControl(String args) throws IOException, InterruptedException {
