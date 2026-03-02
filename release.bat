@@ -76,6 +76,10 @@ echo [INFO] Building server release...
 call "%ROOT_DIR%gradlew.bat" --no-daemon :server:assembleRelease
 if errorlevel 1 goto :fail
 
+echo [INFO] Building apkviewer agent release...
+call "%ROOT_DIR%gradlew.bat" --no-daemon :apkviewer:assembleRelease
+if errorlevel 1 goto :fail
+
 echo [INFO] Building app release...
 call "%ROOT_DIR%gradlew.bat" --no-daemon :app:assembleRelease
 if errorlevel 1 goto :fail
@@ -91,6 +95,7 @@ for %%F in ("%ROOT_DIR%app\build\outputs\apk\release\*-release-unsigned.apk") do
 )
 
 set "SERVER_JAR=%ROOT_DIR%app\src\main\assets\scrcpy-server.jar"
+set "APKVIEWER_AGENT_JAR=%ROOT_DIR%app\src\main\assets\apkviewer-agent.jar"
 
 if not defined SERVER_APK (
     echo [ERROR] Server APK not found.
@@ -107,9 +112,15 @@ if not exist "%SERVER_JAR%" (
     goto :fail
 )
 
+if not exist "%APKVIEWER_AGENT_JAR%" (
+    echo [ERROR] apkviewer-agent.jar not found in app assets.
+    goto :fail
+)
+
 copy /y "%SERVER_APK%" "%OUT_DIR%\server-release-unsigned.apk" >nul
 copy /y "%APP_APK%" "%OUT_DIR%\scrcpy-release-unsigned.apk" >nul
 copy /y "%SERVER_JAR%" "%OUT_DIR%\scrcpy-server.jar" >nul
+copy /y "%APKVIEWER_AGENT_JAR%" "%OUT_DIR%\apkviewer-agent.jar" >nul
 
 set "APP_UNSIGNED=%OUT_DIR%\scrcpy-release-unsigned.apk"
 set "APP_ALIGNED=%OUT_DIR%\scrcpy-release-aligned.apk"
@@ -133,6 +144,7 @@ echo [OK] Build complete. Artifacts:
 echo      %OUT_DIR%\server-release-unsigned.apk
 echo      %OUT_DIR%\scrcpy-release-unsigned.apk
 echo      %OUT_DIR%\scrcpy-server.jar
+echo      %OUT_DIR%\apkviewer-agent.jar
 echo      %OUT_DIR%\scrcpy-release-signed.apk
 if "%DO_ZIPALIGN%"=="1" echo      %OUT_DIR%\scrcpy-release-aligned.apk
 exit /b 0

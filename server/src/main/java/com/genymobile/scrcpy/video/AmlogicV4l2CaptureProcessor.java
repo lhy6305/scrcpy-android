@@ -13,6 +13,8 @@ import com.genymobile.scrcpy.util.Ln;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
+import android.os.Bundle;
+import android.os.SystemClock;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -28,6 +30,11 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
     private static final String KEY_MAX_FPS_TO_ENCODER = "max-fps-to-encoder";
     private static final long AUTO_RESET_STALL_MS = 3000;
     private static final long AUTO_RESET_STARTUP_STALL_MS = 8000;
+    private static final int MAX_CAPTURE_QUEUE_DRAIN = 8;
+    private static final long LATE_FRAME_DROP_THRESHOLD_US = 250_000;
+    private static final long LATE_FRAME_RECOVER_THRESHOLD_US = 120_000;
+    private static final long SYNC_FRAME_REQUEST_INTERVAL_MS = 500;
+    private static final long FORCE_RECOVER_DROP_COUNT = 120;
 
     private final Streamer streamer;
     private final Options options;
@@ -35,6 +42,9 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
     private final AtomicBoolean resetRequested = new AtomicBoolean();
 
     private Thread thread;
+    private boolean droppingFrames;
+    private long droppedFrameCount;
+    private long lastSyncFrameRequestMs;
 
     public AmlogicV4l2CaptureProcessor(Streamer streamer, Options options) {
         this.streamer = streamer;
@@ -119,6 +129,7 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
         boolean configSent = false;
         boolean hasMediaFrame = false;
         long lastFrameTsMs = System.currentTimeMillis();
+        resetDropState();
 
         while (!stopped.get() && !resetRequested.get()) {
             frameBuffer.clear();
@@ -137,6 +148,7 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
             }
             hasMediaFrame = true;
             lastFrameTsMs = System.currentTimeMillis();
+            packetSize = keepLatestFrame(capture, frameBuffer, metadata, packetSize, "h264");
 
             try {
                 frameBuffer.position(0);
@@ -167,6 +179,9 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
 
                 frameBuffer.position(0);
                 frameBuffer.limit(packetSize);
+                if (shouldDropFrame(null, metadata.ptsUs, metadata.keyFrame, "h264")) {
+                    continue;
+                }
                 streamer.writePacket(frameBuffer, metadata.ptsUs, false, metadata.keyFrame);
             } finally {
                 capture.releaseFrame(metadata);
@@ -188,6 +203,7 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
                     options.getVideoCodecOptions());
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
             codec.start();
+            resetDropState();
 
             Ln.i("Amlogic V4L2 raw path uses encoder: " + codec.getName() + ", colorFormat=0x" + Integer.toHexString(colorFormat)
                     + ", source=" + fourccToString(pixelFormat));
@@ -237,6 +253,7 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
                 ++statPositive;
                 hasMediaFrame = true;
                 lastFrameTsMs = System.currentTimeMillis();
+                rawSize = keepLatestFrame(capture, rawFrameBuffer, metadata, rawSize, "raw");
                 if (statPositive <= 3) {
                     Ln.i("Amlogic raw frame #" + statPositive + ", size=" + rawSize + ", pts=" + metadata.ptsUs);
                 }
@@ -332,6 +349,11 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
                                     + ", key=" + keyFrame);
                             outputDebugCount[0] += 1;
                         }
+                        boolean config = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
+                        boolean keyFrame = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
+                        if (!config && shouldDropFrame(codec, bufferInfo.presentationTimeUs, keyFrame, "raw")) {
+                            continue;
+                        }
                         outputBuffer.position(bufferInfo.offset);
                         outputBuffer.limit(bufferInfo.offset + bufferInfo.size);
                         streamer.writePacket(outputBuffer, bufferInfo);
@@ -340,6 +362,94 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
             } finally {
                 codec.releaseOutputBuffer(outputIndex, false);
             }
+        }
+    }
+
+    private void resetDropState() {
+        droppingFrames = false;
+        droppedFrameCount = 0;
+        lastSyncFrameRequestMs = 0;
+    }
+
+    private int keepLatestFrame(AmlogicV4l2CaptureNative capture, ByteBuffer frameBuffer, AmlogicV4l2CaptureNative.FrameMetadata metadata,
+            int currentSize, String path) throws IOException {
+        int droppedQueued = 0;
+
+        for (int i = 0; i < MAX_CAPTURE_QUEUE_DRAIN; ++i) {
+            AmlogicV4l2CaptureNative.FrameMetadata next = new AmlogicV4l2CaptureNative.FrameMetadata();
+            frameBuffer.clear();
+            int nextSize = capture.readFrame(frameBuffer, next);
+            if (nextSize <= 0) {
+                break;
+            }
+
+            capture.releaseFrame(metadata);
+            metadata.ptsUs = next.ptsUs;
+            metadata.keyFrame = next.keyFrame;
+            metadata.bufferIndex = next.bufferIndex;
+            currentSize = nextSize;
+            ++droppedQueued;
+        }
+
+        if (droppedQueued > 0) {
+            Ln.d("Amlogic " + path + " dropped " + droppedQueued + " queued frame(s) to keep latest");
+        }
+
+        return currentSize;
+    }
+
+    private boolean shouldDropFrame(MediaCodec codec, long ptsUs, boolean keyFrame, String path) {
+        long nowUs = System.nanoTime() / 1_000;
+        long lateUs = nowUs - ptsUs;
+        if (lateUs < 0) {
+            lateUs = 0;
+        }
+
+        long nowMs = SystemClock.elapsedRealtime();
+
+        if (droppingFrames) {
+            if (keyFrame && (lateUs <= LATE_FRAME_RECOVER_THRESHOLD_US || droppedFrameCount >= FORCE_RECOVER_DROP_COUNT)) {
+                droppingFrames = false;
+                Ln.i("Amlogic " + path + " latency recovered on key frame (late=" + (lateUs / 1_000) + "ms, dropped="
+                        + droppedFrameCount + ")");
+                droppedFrameCount = 0;
+                return false;
+            }
+
+            ++droppedFrameCount;
+            maybeRequestSyncFrame(codec, nowMs, path);
+            if (droppedFrameCount == 1 || droppedFrameCount % 60 == 0) {
+                Ln.w("Amlogic " + path + " dropping late frames (late=" + (lateUs / 1_000) + "ms, dropped=" + droppedFrameCount + ")");
+            }
+            return true;
+        }
+
+        if (lateUs > LATE_FRAME_DROP_THRESHOLD_US && !keyFrame) {
+            droppingFrames = true;
+            droppedFrameCount = 1;
+            maybeRequestSyncFrame(codec, nowMs, path);
+            Ln.w("Amlogic " + path + " is lagging (late=" + (lateUs / 1_000) + "ms), dropping until next key frame");
+            return true;
+        }
+
+        return false;
+    }
+
+    private void maybeRequestSyncFrame(MediaCodec codec, long nowMs, String path) {
+        if (codec == null) {
+            return;
+        }
+        if (nowMs - lastSyncFrameRequestMs < SYNC_FRAME_REQUEST_INTERVAL_MS) {
+            return;
+        }
+
+        Bundle params = new Bundle();
+        params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);
+        try {
+            codec.setParameters(params);
+            lastSyncFrameRequestMs = nowMs;
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            Ln.d("Amlogic " + path + " could not request sync frame: " + e.getMessage());
         }
     }
 

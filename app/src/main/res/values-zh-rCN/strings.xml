@@ -31,6 +31,34 @@
     <string name="press_again_to_exit">再按一次退出</string>
     <string name="action_cancel">取消</string>
     <string name="action_retry">重试</string>
+    <string name="action_close">关闭</string>
+
+    <string name="menu_title">菜单</string>
+
+    <string name="menu_reconnect_stream">重连（仅重启流）</string>
+    <string name="menu_redeploy_reconnect">重新部署并重连</string>
+    <string name="menu_disconnect">断开并返回</string>
+
+    <string name="menu_key_back">远端：返回</string>
+    <string name="menu_key_home">远端：主页</string>
+    <string name="menu_key_recents">远端：最近任务</string>
+    <string name="menu_key_power">远端：电源键</string>
+    <string name="menu_key_volume_up">远端：音量 +</string>
+    <string name="menu_key_volume_down">远端：音量 -</string>
+    <string name="menu_key_mute">远端：静音</string>
+
+    <string name="menu_open_launcher">启动器</string>
+
+    <string name="menu_toggle_nav">显示导航栏</string>
+    <string name="menu_toggle_control">控制启用</string>
+    <string name="menu_toggle_clipboard_sync">剪贴板同步</string>
+
+    <string name="menu_clipboard_pull_remote">剪贴板：从远端拉取</string>
+    <string name="menu_clipboard_paste_local">剪贴板：粘贴本机到远端</string>
+    <string name="menu_soft_keyboard">输入文本...</string>
+
+    <string name="launcher_search_hint">搜索应用</string>
+    <string name="launcher_icon_desc">应用图标</string>
 
     <string name="switch0">不控制（仅观看画面）</string>
     <string name="switch1">显示导航键（被控设备没有屏幕导航栏时使用）</string>

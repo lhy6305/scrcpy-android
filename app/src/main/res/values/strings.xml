@@ -36,6 +36,34 @@
 
     <string name="action_cancel">Cancel</string>
     <string name="action_retry">Retry</string>
+    <string name="action_close">Close</string>
+
+    <string name="menu_title">Menu</string>
+
+    <string name="menu_reconnect_stream">Reconnect (stream only)</string>
+    <string name="menu_redeploy_reconnect">Redeploy and reconnect</string>
+    <string name="menu_disconnect">Disconnect and return</string>
+
+    <string name="menu_key_back">Remote: Back</string>
+    <string name="menu_key_home">Remote: Home</string>
+    <string name="menu_key_recents">Remote: Recents</string>
+    <string name="menu_key_power">Remote: Power</string>
+    <string name="menu_key_volume_up">Remote: Volume +</string>
+    <string name="menu_key_volume_down">Remote: Volume -</string>
+    <string name="menu_key_mute">Remote: Mute</string>
+
+    <string name="menu_open_launcher">Launcher</string>
+
+    <string name="menu_toggle_nav">Show nav bar</string>
+    <string name="menu_toggle_control">Control enabled</string>
+    <string name="menu_toggle_clipboard_sync">Clipboard sync</string>
+
+    <string name="menu_clipboard_pull_remote">Clipboard: Pull from remote</string>
+    <string name="menu_clipboard_paste_local">Clipboard: Paste local to remote</string>
+    <string name="menu_soft_keyboard">Input text...</string>
+
+    <string name="launcher_search_hint">Search apps</string>
+    <string name="launcher_icon_desc">App icon</string>
     <string name="appswitch_button">=</string>
     <string name="home_button">o</string>
     <string name="back_button">v</string>

@@ -2,6 +2,9 @@ package org.las2mile.scrcpy;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.ServiceConnection;
@@ -17,26 +20,54 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.text.Editable;
+import android.text.TextUtils;
+import android.text.TextWatcher;
 import android.util.Base64;
+import android.util.LruCache;
 import android.view.Gravity;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.AdapterView;
+import android.widget.BaseAdapter;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.GridView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.PopupMenu;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks, SensorEventListener {
     public static final String EXTRA_IP = "ip";
@@ -66,6 +97,30 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
     private Surface surface;
     private FrameLayout videoContainer;
     private LinearLayout navButtonBar;
+    private View floatingBall;
+
+    private FrameLayout launcherOverlay;
+    private EditText launcherSearch;
+    private Button launcherClose;
+    private ProgressBar launcherProgress;
+    private GridView launcherGrid;
+
+    private boolean inputEnabled;
+    private boolean navBarVisible;
+    private boolean clipboardSyncEnabled = true;
+
+    private final ExecutorService launcherExecutor = Executors.newSingleThreadExecutor();
+    private Future<?> launcherListFuture;
+    private Future<?> launcherIconFuture;
+
+    private final List<LauncherApp> launcherAllApps = new ArrayList<>();
+    private final List<LauncherApp> launcherFilteredApps = new ArrayList<>();
+    private final Map<String, LauncherApp> launcherAppByPackage = new HashMap<>();
+    private final Set<String> launcherIconRequested = new HashSet<>();
+    private LauncherAdapter launcherAdapter;
+    private LruCache<String, android.graphics.Bitmap> launcherIconMemCache;
+
+    private volatile boolean agentDeployed = false;
 
     private View connectionOverlay;
     private ProgressBar streamProgress;
@@ -94,6 +149,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         public void onServiceConnected(ComponentName componentName, IBinder iBinder) {
             scrcpy = ((Scrcpy.MyServiceBinder) iBinder).getService();
             scrcpy.setServiceCallbacks(PlayerActivity.this);
+            scrcpy.setClipboardSyncEnabled(clipboardSyncEnabled);
             serviceBound = true;
             scrcpy.start(surface, serverAdr, screenHeight, screenWidth, sessionScid);
         }
@@ -119,6 +175,9 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         nav = intent != null && intent.getBooleanExtra(EXTRA_NAV, false);
         useAmlogicMode = intent != null && intent.getBooleanExtra(EXTRA_AMLOGIC_MODE, false);
 
+        inputEnabled = !noControl;
+        navBarVisible = nav;
+
         sessionScid = generateScid();
 
         setContentView(R.layout.surface);
@@ -128,6 +187,13 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         surfaceView = findViewById(R.id.decoder_surface);
         videoContainer = findViewById(R.id.video_container);
         navButtonBar = findViewById(R.id.nav_button_bar);
+        floatingBall = findViewById(R.id.floating_ball);
+
+        launcherOverlay = findViewById(R.id.launcher_overlay);
+        launcherSearch = findViewById(R.id.launcher_search);
+        launcherClose = findViewById(R.id.launcher_close);
+        launcherProgress = findViewById(R.id.launcher_progress);
+        launcherGrid = findViewById(R.id.launcher_grid);
 
         connectionOverlay = findViewById(R.id.connection_overlay);
         streamProgress = findViewById(R.id.progress_stream_connecting);
@@ -143,6 +209,8 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         }
 
         updateNavVisibility();
+        setupFloatingBall();
+        setupLauncherUi();
 
         SurfaceHolder holder = surfaceView.getHolder();
         holder.addCallback(new SurfaceHolder.Callback() {
@@ -263,6 +331,12 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         if (connectionOverlay != null) {
             connectionOverlay.setVisibility(View.VISIBLE);
         }
+        if (floatingBall != null) {
+            floatingBall.setVisibility(View.GONE);
+        }
+        if (launcherOverlay != null) {
+            launcherOverlay.setVisibility(View.GONE);
+        }
         if (streamProgress != null) {
             streamProgress.setVisibility(View.VISIBLE);
         }
@@ -287,6 +361,9 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         cancelStreamTimeout();
         if (connectionOverlay != null) {
             connectionOverlay.setVisibility(View.GONE);
+        }
+        if (floatingBall != null) {
+            floatingBall.setVisibility(streamingStarted ? View.VISIBLE : View.GONE);
         }
     }
 

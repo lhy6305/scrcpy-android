@@ -119,4 +119,84 @@
             android:textSize="28sp" />
     </LinearLayout>
 
+    <ImageView
+        android:id="@+id/floating_ball"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_gravity="end|center_vertical"
+        android:layout_marginEnd="12dp"
+        android:background="@drawable/floating_ball_bg"
+        android:clickable="true"
+        android:contentDescription="@string/menu_title"
+        android:focusable="true"
+        android:padding="8dp"
+        android:src="@android:drawable/ic_menu_more"
+        android:tint="@android:color/white"
+        android:visibility="gone"
+        tools:visibility="visible" />
+
+    <FrameLayout
+        android:id="@+id/launcher_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#CC000000"
+        android:visibility="gone"
+        tools:visibility="visible">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <EditText
+                    android:id="@+id/launcher_search"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="@string/launcher_search_hint"
+                    android:imeOptions="actionSearch"
+                    android:inputType="text"
+                    android:textColor="@android:color/white"
+                    android:textColorHint="#99FFFFFF" />
+
+                <Button
+                    android:id="@+id/launcher_close"
+                    style="?android:attr/buttonBarButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:text="@string/action_close" />
+            </LinearLayout>
+
+            <ProgressBar
+                android:id="@+id/launcher_progress"
+                style="?android:attr/progressBarStyleLarge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="16dp"
+                android:indeterminate="true"
+                android:visibility="gone"
+                tools:visibility="visible" />
+
+            <GridView
+                android:id="@+id/launcher_grid"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_marginTop="12dp"
+                android:layout_weight="1"
+                android:columnWidth="96dp"
+                android:horizontalSpacing="12dp"
+                android:numColumns="auto_fit"
+                android:stretchMode="columnWidth"
+                android:verticalSpacing="12dp" />
+        </LinearLayout>
+    </FrameLayout>
+
 </FrameLayout>

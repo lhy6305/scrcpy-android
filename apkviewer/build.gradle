@@ -1,0 +1,54 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace = 'org.las2mile.apkviewer'
+    compileSdk 31
+
+    defaultConfig {
+        applicationId "org.las2mile.apkviewer"
+        minSdkVersion 21
+        targetSdkVersion 31
+        versionCode 1
+        versionName "1"
+        setProperty("archivesBaseName", "apkviewer-agent")
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    lint {
+        disable 'ExpiredTargetSdkVersion'
+    }
+}
+
+task copyRelease(type: Copy) {
+    dependsOn 'packageRelease', 'deleteAgentJar'
+    from file('build/outputs/apk/release/apkviewer-agent-release-unsigned.apk')
+    into file('../app/src/main/assets')
+    rename('apkviewer-agent-release-unsigned.apk', 'apkviewer-agent.jar')
+}
+
+task copyDebug(type: Copy) {
+    dependsOn 'packageDebug', 'deleteAgentJar'
+    from file('build/outputs/apk/debug/apkviewer-agent-debug.apk')
+    into file('../app/src/main/assets')
+    rename('apkviewer-agent-debug.apk', 'apkviewer-agent.jar')
+}
+
+task deleteAgentJar(type: Delete) {
+    delete "../app/src/main/assets/apkviewer-agent.jar"
+}
+
+afterEvaluate {
+    assembleRelease.finalizedBy(copyRelease)
+    assembleDebug.finalizedBy(copyDebug)
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}
+

@@ -17,6 +17,7 @@ import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.view.Surface;
@@ -31,6 +32,10 @@ public class SurfaceEncoder implements AsyncProcessor {
     private static final int DEFAULT_I_FRAME_INTERVAL = 10; // seconds
     private static final int REPEAT_FRAME_DELAY_US = 100_000; // repeat after 100ms
     private static final String KEY_MAX_FPS_TO_ENCODER = "max-fps-to-encoder";
+    private static final long LATE_FRAME_DROP_THRESHOLD_US = 250_000;
+    private static final long LATE_FRAME_RECOVER_THRESHOLD_US = 120_000;
+    private static final long SYNC_FRAME_REQUEST_INTERVAL_MS = 500;
+    private static final long FORCE_RECOVER_DROP_COUNT = 120;
 
     // Keep the values in descending order
     private static final int[] MAX_SIZE_FALLBACK = {2560, 1920, 1600, 1280, 1024, 800};
@@ -46,6 +51,11 @@ public class SurfaceEncoder implements AsyncProcessor {
 
     private boolean firstFrameSent;
     private int consecutiveErrors;
+    private boolean droppingFrames;
+    private long droppedFrameCount;
+    private long lastSyncFrameRequestMs;
+    private long driftBasePtsUs = Long.MIN_VALUE;
+    private long driftBaseNowUs;
 
     private Thread thread;
     private final AtomicBoolean stopped = new AtomicBoolean();
@@ -89,6 +99,12 @@ public class SurfaceEncoder implements AsyncProcessor {
                 boolean mediaCodecStarted = false;
                 boolean captureStarted = false;
                 try {
+                    droppingFrames = false;
+                    droppedFrameCount = 0;
+                    lastSyncFrameRequestMs = 0;
+                    driftBasePtsUs = Long.MIN_VALUE;
+                    driftBaseNowUs = 0;
+
                     mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
                     surface = mediaCodec.createInputSurface();
 
@@ -211,6 +227,11 @@ public class SurfaceEncoder implements AsyncProcessor {
                         // If this is not a config packet, then it contains a frame
                         firstFrameSent = true;
                         consecutiveErrors = 0;
+
+                        boolean keyFrame = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
+                        if (shouldDropFrame(codec, bufferInfo.presentationTimeUs, keyFrame)) {
+                            continue;
+                        }
                     }
 
                     streamer.writePacket(codecBuffer, bufferInfo);
@@ -221,6 +242,67 @@ public class SurfaceEncoder implements AsyncProcessor {
                 }
             }
         } while (!eos);
+    }
+
+    private boolean shouldDropFrame(MediaCodec codec, long ptsUs, boolean keyFrame) {
+        long lateUs = computeLatencyDriftUs(ptsUs);
+
+        long nowMs = SystemClock.elapsedRealtime();
+
+        if (droppingFrames) {
+            if (keyFrame && (lateUs <= LATE_FRAME_RECOVER_THRESHOLD_US || droppedFrameCount >= FORCE_RECOVER_DROP_COUNT)) {
+                droppingFrames = false;
+                Ln.i("Video latency recovered on key frame (late=" + (lateUs / 1_000) + "ms, dropped=" + droppedFrameCount + ")");
+                droppedFrameCount = 0;
+                return false;
+            }
+
+            ++droppedFrameCount;
+            maybeRequestSyncFrame(codec, nowMs);
+            if (droppedFrameCount == 1 || droppedFrameCount % 60 == 0) {
+                Ln.w("Dropping late video frames (late=" + (lateUs / 1_000) + "ms, dropped=" + droppedFrameCount + ")");
+            }
+            return true;
+        }
+
+        if (lateUs > LATE_FRAME_DROP_THRESHOLD_US && !keyFrame) {
+            droppingFrames = true;
+            droppedFrameCount = 1;
+            maybeRequestSyncFrame(codec, nowMs);
+            Ln.w("Video encoder is lagging (late=" + (lateUs / 1_000) + "ms), dropping frames until next key frame");
+            return true;
+        }
+
+        return false;
+    }
+
+    private long computeLatencyDriftUs(long ptsUs) {
+        long nowUs = System.nanoTime() / 1_000;
+        if (driftBasePtsUs == Long.MIN_VALUE || ptsUs < driftBasePtsUs) {
+            driftBasePtsUs = ptsUs;
+            driftBaseNowUs = nowUs;
+            return 0;
+        }
+
+        long elapsedPts = ptsUs - driftBasePtsUs;
+        long elapsedNow = nowUs - driftBaseNowUs;
+        long driftUs = elapsedNow - elapsedPts;
+        return driftUs > 0 ? driftUs : 0;
+    }
+
+    private void maybeRequestSyncFrame(MediaCodec codec, long nowMs) {
+        if (nowMs - lastSyncFrameRequestMs < SYNC_FRAME_REQUEST_INTERVAL_MS) {
+            return;
+        }
+
+        Bundle params = new Bundle();
+        params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);
+        try {
+            codec.setParameters(params);
+            lastSyncFrameRequestMs = nowMs;
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            // Ignore codec-specific behavior and continue dropping until a key frame arrives naturally.
+        }
     }
 
     private static MediaCodec createMediaCodec(Codec codec, String encoderName) throws IOException, ConfigurationException {

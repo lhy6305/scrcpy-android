@@ -1,4 +1,5 @@
 evaluationDependsOn(':server')
+evaluationDependsOn(':apkviewer')
 
 apply plugin: 'com.android.application'
 
@@ -29,15 +30,19 @@ android {
 afterEvaluate {
     tasks.named("mergeDebugAssets").configure {
         dependsOn(":server:copyDebug")
+        dependsOn(":apkviewer:copyDebug")
     }
     tasks.named("mergeReleaseAssets").configure {
         dependsOn(":server:copyRelease")
+        dependsOn(":apkviewer:copyRelease")
     }
     tasks.matching { it.name.toLowerCase().contains("lint") && it.name.toLowerCase().contains("debug") }.configureEach {
         dependsOn(":server:copyDebug")
+        dependsOn(":apkviewer:copyDebug")
     }
     tasks.matching { it.name.toLowerCase().contains("lint") && it.name.toLowerCase().contains("release") }.configureEach {
         dependsOn(":server:copyRelease")
+        dependsOn(":apkviewer:copyRelease")
     }
 }
 

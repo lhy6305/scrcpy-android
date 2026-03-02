@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <item
+        android:id="@+id/menu_reconnect_stream"
+        android:title="@string/menu_reconnect_stream" />
+    <item
+        android:id="@+id/menu_redeploy_reconnect"
+        android:title="@string/menu_redeploy_reconnect" />
+    <item
+        android:id="@+id/menu_disconnect"
+        android:title="@string/menu_disconnect" />
+
+    <item
+        android:id="@+id/menu_key_back"
+        android:title="@string/menu_key_back" />
+    <item
+        android:id="@+id/menu_key_home"
+        android:title="@string/menu_key_home" />
+    <item
+        android:id="@+id/menu_key_recents"
+        android:title="@string/menu_key_recents" />
+    <item
+        android:id="@+id/menu_key_power"
+        android:title="@string/menu_key_power" />
+    <item
+        android:id="@+id/menu_key_volume_up"
+        android:title="@string/menu_key_volume_up" />
+    <item
+        android:id="@+id/menu_key_volume_down"
+        android:title="@string/menu_key_volume_down" />
+    <item
+        android:id="@+id/menu_key_mute"
+        android:title="@string/menu_key_mute" />
+
+    <item
+        android:id="@+id/menu_open_launcher"
+        android:title="@string/menu_open_launcher" />
+
+    <item
+        android:id="@+id/menu_toggle_nav"
+        android:checkable="true"
+        android:title="@string/menu_toggle_nav" />
+    <item
+        android:id="@+id/menu_toggle_control"
+        android:checkable="true"
+        android:title="@string/menu_toggle_control" />
+    <item
+        android:id="@+id/menu_toggle_clipboard_sync"
+        android:checkable="true"
+        android:title="@string/menu_toggle_clipboard_sync" />
+
+    <item
+        android:id="@+id/menu_clipboard_pull_remote"
+        android:title="@string/menu_clipboard_pull_remote" />
+    <item
+        android:id="@+id/menu_clipboard_paste_local"
+        android:title="@string/menu_clipboard_paste_local" />
+    <item
+        android:id="@+id/menu_soft_keyboard"
+        android:title="@string/menu_soft_keyboard" />
+
+</menu>

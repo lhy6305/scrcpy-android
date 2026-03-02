@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+      This APK is not intended to be installed.
+      It is executed via `app_process` as a CLASSPATH jar (similar to scrcpy-server.jar).
+    -->
+    <application android:label="apkviewer-agent" />
+</manifest>
+
