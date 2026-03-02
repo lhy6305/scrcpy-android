@@ -264,7 +264,8 @@ static bool is_capture_streaming_supported(int fd) {
     struct v4l2_capability cap;
     memset(&cap, 0, sizeof(cap));
     if (xioctl(fd, VIDIOC_QUERYCAP, &cap) < 0) {
-        return false;
+        LOGW("VIDIOC_QUERYCAP failed: %s, continue in compatibility mode", strerror(errno));
+        return true;
     }
 
     uint32_t caps = cap.capabilities;
@@ -274,7 +275,10 @@ static bool is_capture_streaming_supported(int fd) {
 
     bool capture = (caps & V4L2_CAP_VIDEO_CAPTURE) != 0;
     bool streaming = (caps & V4L2_CAP_STREAMING) != 0;
-    return capture && streaming;
+    if (!capture || !streaming) {
+        LOGW("V4L2 capability mismatch (capture=%d, streaming=%d), continue in compatibility mode", capture ? 1 : 0, streaming ? 1 : 0);
+    }
+    return true;
 }
 
 static bool try_set_format(int fd, int width, int height, uint32_t pixel_format, struct v4l2_format *out_fmt) {

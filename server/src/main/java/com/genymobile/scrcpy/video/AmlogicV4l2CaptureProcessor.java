@@ -16,6 +16,7 @@ import android.media.MediaFormat;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -42,7 +43,35 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
             throw new ConfigurationException("Amlogic V4L2 dedicated mode supports only h264");
         }
 
-        String devicePath = resolveDevicePath(options);
+        List<String> devicePaths = resolveDevicePaths(options);
+        IOException lastOpenError = null;
+        for (int i = 0; i < devicePaths.size(); ++i) {
+            String devicePath = devicePaths.get(i);
+            Ln.i("Trying Amlogic V4L2 device: " + devicePath + " (candidate " + (i + 1) + "/" + devicePaths.size() + ")");
+            try {
+                streamCaptureFromDevice(devicePath);
+                return;
+            } catch (IOException e) {
+                if (stopped.get() || isBrokenPipe(e)) {
+                    Ln.d("Amlogic V4L2 stream closed: " + e.getMessage());
+                    return;
+                }
+                lastOpenError = e;
+                if (i + 1 < devicePaths.size()) {
+                    Ln.w("Failed to open Amlogic V4L2 device " + devicePath + ": " + e.getMessage() + ". Trying fallback device.");
+                } else {
+                    Ln.e("Failed to open Amlogic V4L2 device " + devicePath + ": " + e.getMessage());
+                }
+            }
+        }
+
+        if (lastOpenError != null) {
+            throw lastOpenError;
+        }
+        throw new IOException("No available Amlogic V4L2 device candidates");
+    }
+
+    private void streamCaptureFromDevice(String devicePath) throws IOException, ConfigurationException {
         try (AmlogicV4l2CaptureNative capture = AmlogicV4l2CaptureNative.open(devicePath,
                 options.getAmlogicV4l2Width(), options.getAmlogicV4l2Height(), options.getAmlogicV4l2Fps(),
                 options.getAmlogicV4l2PortType(), options.getAmlogicV4l2SourceType(), options.getAmlogicV4l2Mode(),
@@ -897,11 +926,37 @@ public final class AmlogicV4l2CaptureProcessor implements AsyncProcessor {
         return new String(new char[]{a, b, c, d});
     }
 
-    private static String resolveDevicePath(Options options) throws ConfigurationException {
-        if (options.getAmlogicV4l2DeviceSet()) {
-            Ln.w("Ignoring amlogic_v4l2_device for HAL-consistent behavior; using instance-based /dev/video11|12 mapping");
+    private static boolean isBrokenPipe(IOException e) {
+        String message = e.getMessage();
+        if (message == null) {
+            return false;
         }
-        return resolveDevicePath(options.getAmlogicV4l2Instance());
+        return message.contains("EPIPE") || message.contains("Broken pipe");
+    }
+
+    private static List<String> resolveDevicePaths(Options options) throws ConfigurationException {
+        int preferredInstance = options.getAmlogicV4l2Instance();
+        int fallbackInstance = preferredInstance == 0 ? 1 : 0;
+        String preferredPath = resolveDevicePath(preferredInstance);
+        String fallbackPath = resolveDevicePath(fallbackInstance);
+
+        List<String> candidates = new ArrayList<>(3);
+        if (options.getAmlogicV4l2DeviceSet()) {
+            String explicitPath = options.getAmlogicV4l2Device();
+            if (explicitPath != null) {
+                explicitPath = explicitPath.trim();
+            }
+            if (explicitPath != null && !explicitPath.isEmpty()) {
+                candidates.add(explicitPath);
+            }
+        }
+        if (!candidates.contains(preferredPath)) {
+            candidates.add(preferredPath);
+        }
+        if (!candidates.contains(fallbackPath)) {
+            candidates.add(fallbackPath);
+        }
+        return candidates;
     }
 
     private static String resolveDevicePath(int instanceId) throws ConfigurationException {

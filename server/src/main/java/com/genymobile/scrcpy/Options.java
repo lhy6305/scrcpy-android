@@ -832,12 +832,12 @@ public class Options {
 
     private static AmlogicVideoEncoderConfig parseAmlogicVideoEncoderConfig(String value) {
         AmlogicVideoEncoderConfig config = new AmlogicVideoEncoderConfig();
-        if (value.equals(AML_V4L2_VIDEO_ENCODER)) {
+        if (value.equalsIgnoreCase(AML_V4L2_VIDEO_ENCODER)) {
             return config;
         }
 
         String prefix = AML_V4L2_VIDEO_ENCODER + ":";
-        if (!value.startsWith(prefix)) {
+        if (!value.regionMatches(true, 0, prefix, 0, prefix.length())) {
             return null;
         }
 
@@ -848,13 +848,15 @@ public class Options {
 
         String[] tokens = extras.split(",");
         for (String token : tokens) {
+            token = token.trim();
             int equalIndex = token.indexOf('=');
             if (equalIndex <= 0 || equalIndex == token.length() - 1) {
                 throw new IllegalArgumentException("Invalid amlogic video_encoder option: \"" + token + "\"");
             }
-            String key = token.substring(0, equalIndex);
-            String optionValue = token.substring(equalIndex + 1);
-            switch (key) {
+            String key = token.substring(0, equalIndex).trim().replace('-', '_');
+            String optionValue = token.substring(equalIndex + 1).trim();
+            String normalizedKey = key.toLowerCase(Locale.ENGLISH);
+            switch (normalizedKey) {
                 case "device":
                     config.device = optionValue;
                     config.deviceSet = true;
@@ -923,8 +925,21 @@ public class Options {
                     config.pixelFormat = parseAmlogicPixelFormat(optionValue);
                     config.pixelFormatSet = true;
                     break;
+                case "sourcetype":
+                    config.sourceType = Integer.parseInt(optionValue);
+                    if (config.sourceType < 0) {
+                        throw new IllegalArgumentException("Invalid amlogic_v4l2 source_type: " + config.sourceType);
+                    }
+                    config.sourceTypeSet = true;
+                    break;
+                case "pixelformat":
+                case "pixel_format":
+                    config.pixelFormat = parseAmlogicPixelFormat(optionValue);
+                    config.pixelFormatSet = true;
+                    break;
                 default:
-                    throw new IllegalArgumentException("Unsupported amlogic video_encoder option: \"" + key + "\"");
+                    Ln.w("Ignoring unsupported amlogic video_encoder option: \"" + key + "\"");
+                    break;
             }
         }
 
