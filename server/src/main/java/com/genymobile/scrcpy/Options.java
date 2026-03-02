@@ -33,6 +33,7 @@ public class Options {
     private static final int AML_V4L2_FMT_RGB4 = 0x34424752;
     private static final int AML_V4L2_FMT_RGBP = 0x50424752;
     private static final int AML_V4L2_FMT_RGBR = 0x52424752;
+    private static final String AML_V4L2_VIDEO_ENCODER = "amlogic_v4l2";
 
     private Ln.Level logLevel = Ln.Level.DEBUG;
     private int scid = -1; // 31-bit non-negative value, or -1
@@ -399,6 +400,12 @@ public class Options {
         }
 
         Options options = new Options();
+        boolean amlogicSwitchExplicit = false;
+        boolean amlogicRequestedByVideoEncoder = false;
+        boolean amlogicWidthExplicit = false;
+        boolean amlogicHeightExplicit = false;
+        boolean amlogicFpsExplicit = false;
+        boolean amlogicCropExplicit = false;
 
         for (int i = 1; i < args.length; ++i) {
             String arg = args[i];
@@ -506,9 +513,59 @@ public class Options {
                 case "video_encoder":
                     if (!value.isEmpty()) {
                         options.videoEncoder = value;
+                        AmlogicVideoEncoderConfig amlogicVideoEncoderConfig = parseAmlogicVideoEncoderConfig(value);
+                        if (amlogicVideoEncoderConfig != null) {
+                            amlogicRequestedByVideoEncoder = true;
+                            if (amlogicVideoEncoderConfig.deviceSet) {
+                                options.amlogicV4l2Device = amlogicVideoEncoderConfig.device;
+                                options.amlogicV4l2DeviceSet = true;
+                            }
+                            if (amlogicVideoEncoderConfig.instanceSet) {
+                                options.amlogicV4l2Instance = amlogicVideoEncoderConfig.instance;
+                            }
+                            if (amlogicVideoEncoderConfig.sourceTypeSet) {
+                                options.amlogicV4l2SourceType = amlogicVideoEncoderConfig.sourceType;
+                            }
+                            if (amlogicVideoEncoderConfig.widthSet) {
+                                options.amlogicV4l2Width = amlogicVideoEncoderConfig.width;
+                                amlogicWidthExplicit = true;
+                            }
+                            if (amlogicVideoEncoderConfig.heightSet) {
+                                options.amlogicV4l2Height = amlogicVideoEncoderConfig.height;
+                                amlogicHeightExplicit = true;
+                            }
+                            if (amlogicVideoEncoderConfig.fpsSet) {
+                                options.amlogicV4l2Fps = amlogicVideoEncoderConfig.fps;
+                                amlogicFpsExplicit = true;
+                            }
+                            if (amlogicVideoEncoderConfig.portTypeSet) {
+                                options.amlogicV4l2PortType = amlogicVideoEncoderConfig.portType;
+                            }
+                            if (amlogicVideoEncoderConfig.modeSet) {
+                                options.amlogicV4l2Mode = amlogicVideoEncoderConfig.mode;
+                            }
+                            if (amlogicVideoEncoderConfig.rotationSet) {
+                                options.amlogicV4l2Rotation = amlogicVideoEncoderConfig.rotation;
+                            }
+                            if (amlogicVideoEncoderConfig.cropSet) {
+                                options.amlogicV4l2CropLeft = amlogicVideoEncoderConfig.cropLeft;
+                                options.amlogicV4l2CropTop = amlogicVideoEncoderConfig.cropTop;
+                                options.amlogicV4l2CropWidth = amlogicVideoEncoderConfig.cropWidth;
+                                options.amlogicV4l2CropHeight = amlogicVideoEncoderConfig.cropHeight;
+                                options.amlogicV4l2CropSet = true;
+                                amlogicCropExplicit = true;
+                            }
+                            if (amlogicVideoEncoderConfig.reqBufCountSet) {
+                                options.amlogicV4l2ReqBufCount = amlogicVideoEncoderConfig.reqBufCount;
+                            }
+                            if (amlogicVideoEncoderConfig.pixelFormatSet) {
+                                options.amlogicV4l2PixelFormat = amlogicVideoEncoderConfig.pixelFormat;
+                            }
+                        }
                     }
                     break;
                 case "amlogic_v4l2":
+                    amlogicSwitchExplicit = true;
                     options.amlogicV4l2 = Boolean.parseBoolean(value);
                     break;
                 case "amlogic_v4l2_device":
@@ -532,12 +589,15 @@ public class Options {
                     }
                     break;
                 case "amlogic_v4l2_width":
+                    amlogicWidthExplicit = true;
                     options.amlogicV4l2Width = parsePositiveIntOrDefault("amlogic_v4l2_width", value, AML_V4L2_FALLBACK_WIDTH);
                     break;
                 case "amlogic_v4l2_height":
+                    amlogicHeightExplicit = true;
                     options.amlogicV4l2Height = parsePositiveIntOrDefault("amlogic_v4l2_height", value, AML_V4L2_FALLBACK_HEIGHT);
                     break;
                 case "amlogic_v4l2_fps":
+                    amlogicFpsExplicit = true;
                     options.amlogicV4l2Fps = Integer.parseInt(value);
                     if (options.amlogicV4l2Fps <= 0) {
                         throw new IllegalArgumentException("Invalid amlogic_v4l2_fps: " + options.amlogicV4l2Fps);
@@ -559,6 +619,7 @@ public class Options {
                     break;
                 case "amlogic_v4l2_crop":
                     if (!value.isEmpty()) {
+                        amlogicCropExplicit = true;
                         Rect amlCrop = parseAmlogicCrop(value);
                         options.amlogicV4l2CropLeft = amlCrop.left;
                         options.amlogicV4l2CropTop = amlCrop.top;
@@ -695,6 +756,40 @@ public class Options {
             options.displayId = Device.DISPLAY_ID_NONE;
         }
 
+        if (amlogicRequestedByVideoEncoder && !amlogicSwitchExplicit) {
+            options.amlogicV4l2 = true;
+        }
+
+        if (options.amlogicV4l2) {
+            if (!amlogicCropExplicit && options.crop != null) {
+                options.amlogicV4l2CropLeft = options.crop.left;
+                options.amlogicV4l2CropTop = options.crop.top;
+                options.amlogicV4l2CropWidth = options.crop.width();
+                options.amlogicV4l2CropHeight = options.crop.height();
+                options.amlogicV4l2CropSet = true;
+            }
+
+            if (options.crop != null) {
+                if (!amlogicWidthExplicit) {
+                    options.amlogicV4l2Width = options.crop.width();
+                }
+                if (!amlogicHeightExplicit) {
+                    options.amlogicV4l2Height = options.crop.height();
+                }
+            } else if (options.maxSize > 0) {
+                if (!amlogicWidthExplicit) {
+                    options.amlogicV4l2Width = options.maxSize;
+                }
+                if (!amlogicHeightExplicit) {
+                    options.amlogicV4l2Height = inferAmlogicHeightFromMaxSize(options.maxSize);
+                }
+            }
+
+            if (!amlogicFpsExplicit && options.maxFps > 0) {
+                options.amlogicV4l2Fps = inferAmlogicFps(options.maxFps);
+            }
+        }
+
         if (options.amlogicV4l2 && !options.amlogicV4l2CropSet) {
             options.amlogicV4l2CropLeft = 0;
             options.amlogicV4l2CropTop = 0;
@@ -703,6 +798,147 @@ public class Options {
         }
 
         return options;
+    }
+
+    private static final class AmlogicVideoEncoderConfig {
+        private boolean deviceSet;
+        private String device;
+        private boolean instanceSet;
+        private int instance;
+        private boolean sourceTypeSet;
+        private int sourceType;
+        private boolean widthSet;
+        private int width;
+        private boolean heightSet;
+        private int height;
+        private boolean fpsSet;
+        private int fps;
+        private boolean portTypeSet;
+        private int portType;
+        private boolean modeSet;
+        private int mode;
+        private boolean rotationSet;
+        private int rotation;
+        private boolean cropSet;
+        private int cropLeft;
+        private int cropTop;
+        private int cropWidth;
+        private int cropHeight;
+        private boolean reqBufCountSet;
+        private int reqBufCount;
+        private boolean pixelFormatSet;
+        private int pixelFormat;
+    }
+
+    private static AmlogicVideoEncoderConfig parseAmlogicVideoEncoderConfig(String value) {
+        AmlogicVideoEncoderConfig config = new AmlogicVideoEncoderConfig();
+        if (value.equals(AML_V4L2_VIDEO_ENCODER)) {
+            return config;
+        }
+
+        String prefix = AML_V4L2_VIDEO_ENCODER + ":";
+        if (!value.startsWith(prefix)) {
+            return null;
+        }
+
+        String extras = value.substring(prefix.length());
+        if (extras.isEmpty()) {
+            return config;
+        }
+
+        String[] tokens = extras.split(",");
+        for (String token : tokens) {
+            int equalIndex = token.indexOf('=');
+            if (equalIndex <= 0 || equalIndex == token.length() - 1) {
+                throw new IllegalArgumentException("Invalid amlogic video_encoder option: \"" + token + "\"");
+            }
+            String key = token.substring(0, equalIndex);
+            String optionValue = token.substring(equalIndex + 1);
+            switch (key) {
+                case "device":
+                    config.device = optionValue;
+                    config.deviceSet = true;
+                    break;
+                case "instance":
+                    config.instance = Integer.parseInt(optionValue);
+                    if (config.instance < 0 || config.instance > 1) {
+                        throw new IllegalArgumentException("Invalid amlogic_v4l2 instance: " + config.instance);
+                    }
+                    config.instanceSet = true;
+                    break;
+                case "source_type":
+                    config.sourceType = Integer.parseInt(optionValue);
+                    if (config.sourceType < 0) {
+                        throw new IllegalArgumentException("Invalid amlogic_v4l2 source_type: " + config.sourceType);
+                    }
+                    config.sourceTypeSet = true;
+                    break;
+                case "width":
+                    config.width = parsePositiveIntOrDefault("video_encoder.width", optionValue, AML_V4L2_FALLBACK_WIDTH);
+                    config.widthSet = true;
+                    break;
+                case "height":
+                    config.height = parsePositiveIntOrDefault("video_encoder.height", optionValue, AML_V4L2_FALLBACK_HEIGHT);
+                    config.heightSet = true;
+                    break;
+                case "fps":
+                    config.fps = Integer.parseInt(optionValue);
+                    if (config.fps <= 0) {
+                        throw new IllegalArgumentException("Invalid amlogic_v4l2 fps: " + config.fps);
+                    }
+                    config.fpsSet = true;
+                    break;
+                case "port":
+                    config.portType = Integer.decode(optionValue);
+                    config.portTypeSet = true;
+                    break;
+                case "mode":
+                    config.mode = Integer.parseInt(optionValue);
+                    config.modeSet = true;
+                    break;
+                case "rotation":
+                    config.rotation = Integer.parseInt(optionValue);
+                    if (config.rotation != -1 && config.rotation != 0 && config.rotation != 90 && config.rotation != 180
+                            && config.rotation != 270) {
+                        throw new IllegalArgumentException("Invalid amlogic_v4l2 rotation: " + config.rotation);
+                    }
+                    config.rotationSet = true;
+                    break;
+                case "crop":
+                    Rect amlCrop = parseAmlogicCrop(optionValue);
+                    config.cropLeft = amlCrop.left;
+                    config.cropTop = amlCrop.top;
+                    config.cropWidth = amlCrop.width();
+                    config.cropHeight = amlCrop.height();
+                    config.cropSet = true;
+                    break;
+                case "reqbufs":
+                    config.reqBufCount = Integer.parseInt(optionValue);
+                    if (config.reqBufCount < 2) {
+                        throw new IllegalArgumentException("Invalid amlogic_v4l2 reqbufs: " + config.reqBufCount);
+                    }
+                    config.reqBufCountSet = true;
+                    break;
+                case "format":
+                    config.pixelFormat = parseAmlogicPixelFormat(optionValue);
+                    config.pixelFormatSet = true;
+                    break;
+                default:
+                    throw new IllegalArgumentException("Unsupported amlogic video_encoder option: \"" + key + "\"");
+            }
+        }
+
+        return config;
+    }
+
+    private static int inferAmlogicHeightFromMaxSize(int maxSize) {
+        int inferredHeight = (maxSize * 9 / 16) & ~1;
+        return inferredHeight > 0 ? inferredHeight : maxSize;
+    }
+
+    private static int inferAmlogicFps(float maxFps) {
+        int inferredFps = Math.round(maxFps);
+        return inferredFps > 0 ? inferredFps : 30;
     }
 
     private static Rect parseCrop(String crop) {
