@@ -44,7 +44,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
 import java.util.HashMap;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.Iterator;
+import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -109,7 +110,7 @@ public class Scrcpy extends Service {
     private final int[] remoteDevResolution = new int[2];
     private volatile boolean socketStatus = false;
     private final AtomicBoolean connectionReported = new AtomicBoolean(false);
-    private final LinkedBlockingQueue<byte[]> controlQueue = new LinkedBlockingQueue<>(256);
+    private final LinkedBlockingDeque<byte[]> controlQueue = new LinkedBlockingDeque<>(256);
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicReference<String> lastRemoteClipboardText = new AtomicReference<>();
     private final AtomicLong clipboardSequence = new AtomicLong(1);
@@ -288,10 +289,53 @@ public class Scrcpy extends Service {
     }
 
     private void enqueueControlMessage(byte[] msg) {
-        if (!controlQueue.offer(msg)) {
-            controlQueue.poll();
-            controlQueue.offer(msg);
+        if (msg == null) {
+            return;
         }
+        if (controlQueue.offer(msg)) {
+            return;
+        }
+
+        if (isTouchMoveMessage(msg)) {
+            // Keep only the latest MOVE samples when saturated.
+            if (removeLastQueuedTouchMove()) {
+                controlQueue.offer(msg);
+            }
+            return;
+        }
+
+        // For non-MOVE events, first remove stale queued MOVE events.
+        boolean enqueued = false;
+        while (!enqueued) {
+            enqueued = controlQueue.offer(msg);
+            if (enqueued) {
+                return;
+            }
+            if (removeLastQueuedTouchMove()) {
+                continue;
+            }
+            // Queue still full with important events: drop oldest to move forward.
+            controlQueue.poll();
+        }
+    }
+
+    private boolean removeLastQueuedTouchMove() {
+        Iterator<byte[]> it = controlQueue.descendingIterator();
+        while (it.hasNext()) {
+            byte[] candidate = it.next();
+            if (isTouchMoveMessage(candidate)) {
+                return controlQueue.remove(candidate);
+            }
+        }
+        return false;
+    }
+
+    private static boolean isTouchMoveMessage(byte[] msg) {
+        if (msg == null || msg.length < 2) {
+            return false;
+        }
+        return (msg[0] & 0xFF) == CONTROL_MSG_TYPE_INJECT_TOUCH_EVENT
+                && (msg[1] & 0xFF) == MotionEvent.ACTION_MOVE;
     }
 
     private void startConnection() {

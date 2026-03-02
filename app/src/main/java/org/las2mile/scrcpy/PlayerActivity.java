@@ -54,6 +54,7 @@ import android.widget.Toast;
 import com.tananaev.adblib.AdbConnection;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -72,6 +73,8 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks, SensorEventListener {
     public static final String EXTRA_IP = "ip";
@@ -91,6 +94,9 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
     private static final String APKVIEWER_AGENT_VERSION = "1";
     private static final int SHARED_ADB_OPEN_RETRY_COUNT = 3;
     private static final long SHARED_ADB_OPEN_RETRY_DELAY_MS = 160L;
+    private static final long LAUNCHER_LIST_CACHE_TTL_MS = 3 * 60_000L;
+    private static final long LAUNCHER_LIST_CACHE_MAX_AGE_MS = 24 * 60 * 60_000L;
+    private static final String LAUNCHER_LIST_CACHE_HEADER_PREFIX = "APP_CACHE_V1|";
 
     private static final SecureRandom SCID_RANDOM = new SecureRandom();
 
@@ -126,6 +132,8 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
     private final List<LauncherApp> launcherFilteredApps = new ArrayList<>();
     private final Map<String, LauncherApp> launcherAppByPackage = new HashMap<>();
     private final Set<String> launcherIconRequested = new HashSet<>();
+    private final AtomicLong launcherListRequestSeq = new AtomicLong(0);
+    private final AtomicBoolean launcherStartInFlight = new AtomicBoolean(false);
     private LauncherAdapter launcherAdapter;
     private LruCache<String, android.graphics.Bitmap> launcherIconMemCache;
 
@@ -937,6 +945,9 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             return;
         }
         launcherOverlay.setVisibility(View.VISIBLE);
+        if (launcherSearch != null) {
+            launcherSearch.setText("");
+        }
         if (launcherProgress != null) {
             launcherProgress.setVisibility(View.VISIBLE);
         }
@@ -962,6 +973,22 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             return;
         }
 
+        final long requestSeq = launcherListRequestSeq.incrementAndGet();
+        LauncherListCacheSnapshot cacheSnapshot = readLauncherListCache();
+        final boolean hasCachedList = cacheSnapshot != null;
+        if (cacheSnapshot != null) {
+            applyNewAppList(cacheSnapshot.apps);
+            if (launcherProgress != null) {
+                launcherProgress.setVisibility(View.GONE);
+            }
+            requestIconsForVisibleItems();
+            if (cacheSnapshot.isFresh()) {
+                return;
+            }
+        } else if (launcherProgress != null) {
+            launcherProgress.setVisibility(View.VISIBLE);
+        }
+
         Future<?> old = launcherListFuture;
         launcherListFuture = null;
         if (old != null) {
@@ -973,8 +1000,9 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
                 ensureAgentDeployed();
                 String output = execAgentWithFallback("list");
                 List<LauncherApp> apps = parseAppList(output);
+                writeLauncherListCache(output);
                 runOnUiThread(() -> {
-                    if (isFinishing()) {
+                    if (isFinishing() || requestSeq != launcherListRequestSeq.get()) {
                         return;
                     }
                     applyNewAppList(apps);
@@ -988,17 +1016,25 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             } catch (Exception e) {
                 Log.e("scrcpy", "Failed to load launcher app list", e);
                 runOnUiThread(() -> {
+                    if (isFinishing() || requestSeq != launcherListRequestSeq.get()) {
+                        return;
+                    }
                     if (launcherProgress != null) {
                         launcherProgress.setVisibility(View.GONE);
                     }
-                    String msg = getString(R.string.toast_failed_load_apps) + ": " + briefError(e);
-                    Toast.makeText(PlayerActivity.this, msg, Toast.LENGTH_LONG).show();
+                    if (!hasCachedList) {
+                        String msg = getString(R.string.toast_failed_load_apps) + ": " + briefError(e);
+                        Toast.makeText(PlayerActivity.this, msg, Toast.LENGTH_LONG).show();
+                    }
                 });
             }
         });
     }
 
     private void applyNewAppList(List<LauncherApp> apps) {
+        String query = launcherSearch != null && launcherSearch.getText() != null
+                ? launcherSearch.getText().toString()
+                : "";
         launcherAllApps.clear();
         launcherFilteredApps.clear();
         launcherAppByPackage.clear();
@@ -1010,13 +1046,14 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
                 launcherAppByPackage.put(app.packageName, app);
             }
         }
-        launcherFilteredApps.addAll(launcherAllApps);
-        if (launcherAdapter != null) {
-            launcherAdapter.notifyDataSetChanged();
+        if (query.trim().isEmpty()) {
+            launcherFilteredApps.addAll(launcherAllApps);
+            if (launcherAdapter != null) {
+                launcherAdapter.notifyDataSetChanged();
+            }
+            return;
         }
-        if (launcherSearch != null) {
-            launcherSearch.setText("");
-        }
+        applyLauncherFilter(query);
     }
 
     private void applyLauncherFilter(String query) {
@@ -1450,6 +1487,80 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         }
     }
 
+    private File getLauncherListCacheFile() {
+        File dir = new File(getCacheDir(), "apkviewer_lists");
+        //noinspection ResultOfMethodCallIgnored
+        dir.mkdirs();
+        String key = sanitizeFileName(serverAdr != null ? serverAdr : "unknown");
+        return new File(dir, key + ".txt");
+    }
+
+    private LauncherListCacheSnapshot readLauncherListCache() {
+        File cacheFile = getLauncherListCacheFile();
+        if (!cacheFile.exists()) {
+            return null;
+        }
+        try {
+            byte[] raw = readFileFully(cacheFile);
+            if (raw.length == 0) {
+                return null;
+            }
+            String text = new String(raw, StandardCharsets.UTF_8);
+            int lineBreak = text.indexOf('\n');
+            if (lineBreak <= 0) {
+                return null;
+            }
+            String header = text.substring(0, lineBreak).trim();
+            if (!header.startsWith(LAUNCHER_LIST_CACHE_HEADER_PREFIX)) {
+                return null;
+            }
+            long timestampMs;
+            try {
+                timestampMs = Long.parseLong(header.substring(LAUNCHER_LIST_CACHE_HEADER_PREFIX.length()));
+            } catch (NumberFormatException e) {
+                return null;
+            }
+
+            long now = System.currentTimeMillis();
+            if (timestampMs <= 0 || now < timestampMs || now - timestampMs > LAUNCHER_LIST_CACHE_MAX_AGE_MS) {
+                //noinspection ResultOfMethodCallIgnored
+                cacheFile.delete();
+                return null;
+            }
+
+            String payload = text.substring(lineBreak + 1);
+            return new LauncherListCacheSnapshot(timestampMs, parseAppList(payload));
+        } catch (IOException e) {
+            Log.w("scrcpy", "Failed to read launcher cache", e);
+            return null;
+        }
+    }
+
+    private void writeLauncherListCache(String listOutput) {
+        if (listOutput == null) {
+            return;
+        }
+        String header = LAUNCHER_LIST_CACHE_HEADER_PREFIX + System.currentTimeMillis();
+        String payload = header + "\n" + listOutput;
+        try {
+            writeFileAtomic(getLauncherListCacheFile(), payload.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            Log.w("scrcpy", "Failed to write launcher cache", e);
+        }
+    }
+
+    private static byte[] readFileFully(File file) throws IOException {
+        try (FileInputStream fis = new FileInputStream(file);
+             ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[16 * 1024];
+            int n;
+            while ((n = fis.read(buf)) != -1) {
+                baos.write(buf, 0, n);
+            }
+            return baos.toByteArray();
+        }
+    }
+
     private static List<LauncherApp> parseAppList(String output) {
         if (output == null || output.isEmpty()) {
             return Collections.emptyList();
@@ -1501,39 +1612,49 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             Toast.makeText(this, R.string.toast_not_connected, Toast.LENGTH_SHORT).show();
             return;
         }
+        if (!launcherStartInFlight.compareAndSet(false, true)) {
+            return;
+        }
 
         hideLauncherOverlay();
 
-        launcherExecutor.submit(() -> {
-            try {
-                // Explicit component start. This matches a launcher icon click best on TV boxes.
-                String cmd = "am start -n " + app.component;
-                String out = execShellWithFallback(cmd);
-                if (isAmStartSuccess(out)) {
-                    return;
-                }
+        try {
+            launcherExecutor.submit(() -> {
+                try {
+                    // Explicit component start. This matches a launcher icon click best on TV boxes.
+                    String cmd = "am start -n " + app.component;
+                    String out = execShellWithFallback(cmd);
+                    if (isAmStartSuccess(out)) {
+                        return;
+                    }
 
-                // Fallback: some apps might not start via explicit component (or component changed).
-                String outLeanback = execShellWithFallback(
-                        "monkey -p " + app.packageName + " -c android.intent.category.LEANBACK_LAUNCHER 1");
-                if (isMonkeySuccess(outLeanback)) {
-                    return;
-                }
+                    // Fallback: some apps might not start via explicit component (or component changed).
+                    String outLeanback = execShellWithFallback(
+                            "monkey -p " + app.packageName + " -c android.intent.category.LEANBACK_LAUNCHER 1");
+                    if (isMonkeySuccess(outLeanback)) {
+                        return;
+                    }
 
-                String outLauncher = execShellWithFallback(
-                        "monkey -p " + app.packageName + " -c android.intent.category.LAUNCHER 1");
-                if (isMonkeySuccess(outLauncher)) {
-                    return;
-                }
+                    String outLauncher = execShellWithFallback(
+                            "monkey -p " + app.packageName + " -c android.intent.category.LAUNCHER 1");
+                    if (isMonkeySuccess(outLauncher)) {
+                        return;
+                    }
 
-                runOnUiThread(() -> Toast.makeText(PlayerActivity.this, R.string.toast_failed_start_app, Toast.LENGTH_SHORT).show());
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            } catch (Exception e) {
-                Log.e("scrcpy", "Failed to start remote app: " + app.packageName, e);
-                runOnUiThread(() -> Toast.makeText(PlayerActivity.this, R.string.toast_failed_start_app, Toast.LENGTH_SHORT).show());
-            }
-        });
+                    runOnUiThread(() -> Toast.makeText(PlayerActivity.this, R.string.toast_failed_start_app, Toast.LENGTH_SHORT).show());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (Exception e) {
+                    Log.e("scrcpy", "Failed to start remote app: " + app.packageName, e);
+                    runOnUiThread(() -> Toast.makeText(PlayerActivity.this, R.string.toast_failed_start_app, Toast.LENGTH_SHORT).show());
+                } finally {
+                    launcherStartInFlight.set(false);
+                }
+            });
+        } catch (RuntimeException e) {
+            launcherStartInFlight.set(false);
+            throw e;
+        }
     }
 
     private static boolean isAmStartSuccess(String output) {
@@ -1707,6 +1828,20 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
 
         String iconCacheKey(int sizePx) {
             return packageName + "|" + versionCode + "|" + sizePx;
+        }
+    }
+
+    private static final class LauncherListCacheSnapshot {
+        final long timestampMs;
+        final List<LauncherApp> apps;
+
+        LauncherListCacheSnapshot(long timestampMs, List<LauncherApp> apps) {
+            this.timestampMs = timestampMs;
+            this.apps = apps != null ? apps : Collections.emptyList();
+        }
+
+        boolean isFresh() {
+            return System.currentTimeMillis() - timestampMs <= LAUNCHER_LIST_CACHE_TTL_MS;
         }
     }
 
@@ -1997,6 +2132,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
     @Override
     protected void onDestroy() {
         cancelDeployThread();
+        launcherStartInFlight.set(false);
         Future<?> lf = launcherListFuture;
         launcherListFuture = null;
         if (lf != null) {
