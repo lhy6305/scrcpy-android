@@ -82,6 +82,10 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
     private static final int REMOTE_ORIENTATION_PORTRAIT = 1;
     private static final int REMOTE_ORIENTATION_LANDSCAPE = 2;
 
+    private static final String PREF_KEY = "default";
+    private static final String PREF_FLOAT_BALL_X = "float_ball_x_ratio";
+    private static final String PREF_FLOAT_BALL_Y = "float_ball_y_ratio";
+
     private static final SecureRandom SCID_RANDOM = new SecureRandom();
 
     private String serverAdr;
@@ -391,6 +395,275 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             // ignore
         }
         scrcpy = null;
+    }
+
+    private void setupFloatingBall() {
+        if (floatingBall == null) {
+            return;
+        }
+
+        floatingBall.post(this::restoreFloatingBallPosition);
+
+        final int touchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
+        floatingBall.setOnTouchListener(new View.OnTouchListener() {
+            float downRawX;
+            float downRawY;
+            float startX;
+            float startY;
+            boolean dragging;
+
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                if (event == null) {
+                    return false;
+                }
+                View parent = (View) v.getParent();
+                if (parent == null) {
+                    return false;
+                }
+
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        downRawX = event.getRawX();
+                        downRawY = event.getRawY();
+                        startX = v.getX();
+                        startY = v.getY();
+                        dragging = false;
+                        return true;
+                    case MotionEvent.ACTION_MOVE: {
+                        float dx = event.getRawX() - downRawX;
+                        float dy = event.getRawY() - downRawY;
+                        if (!dragging) {
+                            if (Math.hypot(dx, dy) >= touchSlop) {
+                                dragging = true;
+                            } else {
+                                return true;
+                            }
+                        }
+
+                        float newX = startX + dx;
+                        float newY = startY + dy;
+                        float maxX = Math.max(0, parent.getWidth() - v.getWidth());
+                        float maxY = Math.max(0, parent.getHeight() - v.getHeight());
+                        v.setX(clampFloat(newX, 0, maxX));
+                        v.setY(clampFloat(newY, 0, maxY));
+                        return true;
+                    }
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        if (!dragging) {
+                            showFloatingBallMenu();
+                        } else {
+                            saveFloatingBallPosition();
+                        }
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+        });
+    }
+
+    private void restoreFloatingBallPosition() {
+        if (floatingBall == null) {
+            return;
+        }
+        View parent = (View) floatingBall.getParent();
+        if (parent == null) {
+            return;
+        }
+        int parentW = parent.getWidth() - floatingBall.getWidth();
+        int parentH = parent.getHeight() - floatingBall.getHeight();
+        if (parentW <= 0 || parentH <= 0) {
+            return;
+        }
+
+        float xRatio = getSharedPreferences(PREF_KEY, 0).getFloat(PREF_FLOAT_BALL_X, Float.NaN);
+        float yRatio = getSharedPreferences(PREF_KEY, 0).getFloat(PREF_FLOAT_BALL_Y, Float.NaN);
+        if (Float.isNaN(xRatio) || Float.isNaN(yRatio)) {
+            return;
+        }
+
+        float x = clampFloat(xRatio, 0, 1) * parentW;
+        float y = clampFloat(yRatio, 0, 1) * parentH;
+        floatingBall.setX(clampFloat(x, 0, parentW));
+        floatingBall.setY(clampFloat(y, 0, parentH));
+    }
+
+    private void saveFloatingBallPosition() {
+        if (floatingBall == null) {
+            return;
+        }
+        View parent = (View) floatingBall.getParent();
+        if (parent == null) {
+            return;
+        }
+        float maxX = Math.max(1, parent.getWidth() - floatingBall.getWidth());
+        float maxY = Math.max(1, parent.getHeight() - floatingBall.getHeight());
+
+        float xRatio = clampFloat(floatingBall.getX() / maxX, 0, 1);
+        float yRatio = clampFloat(floatingBall.getY() / maxY, 0, 1);
+        getSharedPreferences(PREF_KEY, 0).edit()
+                .putFloat(PREF_FLOAT_BALL_X, xRatio)
+                .putFloat(PREF_FLOAT_BALL_Y, yRatio)
+                .apply();
+    }
+
+    private static float clampFloat(float value, float min, float max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private void showFloatingBallMenu() {
+        if (floatingBall == null) {
+            return;
+        }
+        PopupMenu menu = new PopupMenu(this, floatingBall);
+        menu.inflate(R.menu.floating_ball_menu);
+
+        boolean connected = serviceBound && scrcpy != null && scrcpy.check_socket_connection();
+
+        menu.getMenu().findItem(R.id.menu_toggle_nav).setChecked(navBarVisible);
+        menu.getMenu().findItem(R.id.menu_toggle_control).setChecked(inputEnabled);
+        menu.getMenu().findItem(R.id.menu_toggle_clipboard_sync).setChecked(clipboardSyncEnabled);
+
+        // Disable remote control actions while not connected.
+        setMenuEnabled(menu, R.id.menu_key_back, connected);
+        setMenuEnabled(menu, R.id.menu_key_home, connected);
+        setMenuEnabled(menu, R.id.menu_key_recents, connected);
+        setMenuEnabled(menu, R.id.menu_key_power, connected);
+        setMenuEnabled(menu, R.id.menu_key_volume_up, connected);
+        setMenuEnabled(menu, R.id.menu_key_volume_down, connected);
+        setMenuEnabled(menu, R.id.menu_key_mute, connected);
+        setMenuEnabled(menu, R.id.menu_clipboard_pull_remote, connected);
+        setMenuEnabled(menu, R.id.menu_clipboard_paste_local, connected);
+        setMenuEnabled(menu, R.id.menu_soft_keyboard, connected);
+
+        menu.setOnMenuItemClickListener(item -> {
+            if (item == null) {
+                return false;
+            }
+            int id = item.getItemId();
+            if (id == R.id.menu_reconnect_stream) {
+                reconnectStreamOnly();
+                return true;
+            }
+            if (id == R.id.menu_redeploy_reconnect) {
+                startConnection();
+                return true;
+            }
+            if (id == R.id.menu_disconnect) {
+                cancelAndFinish();
+                return true;
+            }
+
+            if (id == R.id.menu_open_launcher) {
+                showLauncherOverlay();
+                return true;
+            }
+
+            if (id == R.id.menu_toggle_nav) {
+                navBarVisible = !navBarVisible;
+                updateNavVisibility();
+                return true;
+            }
+
+            if (id == R.id.menu_toggle_control) {
+                inputEnabled = !inputEnabled;
+                setupTouchAndNavControls();
+                return true;
+            }
+
+            if (id == R.id.menu_toggle_clipboard_sync) {
+                clipboardSyncEnabled = !clipboardSyncEnabled;
+                if (serviceBound && scrcpy != null) {
+                    scrcpy.setClipboardSyncEnabled(clipboardSyncEnabled);
+                }
+                Toast.makeText(this, clipboardSyncEnabled ? "Clipboard sync enabled" : "Clipboard sync disabled", Toast.LENGTH_SHORT).show();
+                return true;
+            }
+
+            if (id == R.id.menu_key_back) {
+                sendKeyIfAllowed(KeyEvent.KEYCODE_BACK);
+                return true;
+            }
+            if (id == R.id.menu_key_home) {
+                sendKeyIfAllowed(KeyEvent.KEYCODE_HOME);
+                return true;
+            }
+            if (id == R.id.menu_key_recents) {
+                sendKeyIfAllowed(KeyEvent.KEYCODE_APP_SWITCH);
+                return true;
+            }
+            if (id == R.id.menu_key_power) {
+                sendKeyIfAllowed(KeyEvent.KEYCODE_POWER);
+                return true;
+            }
+            if (id == R.id.menu_key_volume_up) {
+                sendKeyIfAllowed(KeyEvent.KEYCODE_VOLUME_UP);
+                return true;
+            }
+            if (id == R.id.menu_key_volume_down) {
+                sendKeyIfAllowed(KeyEvent.KEYCODE_VOLUME_DOWN);
+                return true;
+            }
+            if (id == R.id.menu_key_mute) {
+                sendKeyIfAllowed(KeyEvent.KEYCODE_VOLUME_MUTE);
+                return true;
+            }
+
+            if (id == R.id.menu_clipboard_pull_remote) {
+                pullRemoteClipboardToLocal();
+                return true;
+            }
+            if (id == R.id.menu_clipboard_paste_local) {
+                pasteLocalClipboardToRemote();
+                return true;
+            }
+            if (id == R.id.menu_soft_keyboard) {
+                showTextInputDialog();
+                return true;
+            }
+            return false;
+        });
+
+        menu.show();
+    }
+
+    private static void setMenuEnabled(PopupMenu menu, int itemId, boolean enabled) {
+        if (menu == null) {
+            return;
+        }
+        if (menu.getMenu() == null) {
+            return;
+        }
+        android.view.MenuItem item = menu.getMenu().findItem(itemId);
+        if (item != null) {
+            item.setEnabled(enabled);
+        }
+    }
+
+    private void reconnectStreamOnly() {
+        stopScrcpyServiceIfRunning();
+        cancelDeployThread();
+
+        streamingStarted = false;
+        remoteDeviceWidth = 0;
+        remoteDeviceHeight = 0;
+        lastRemoteOrientation = REMOTE_ORIENTATION_UNKNOWN;
+        showConnectingUi(R.string.status_connecting, false);
+        startScrcpyServiceAndBind();
+    }
+
+    private void sendKeyIfAllowed(int keyCode) {
+        if (!inputEnabled) {
+            Toast.makeText(this, "Control disabled", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!(serviceBound && scrcpy != null)) {
+            Toast.makeText(this, "Not connected", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        scrcpy.sendKeyevent(keyCode);
     }
 
     private void updateNavVisibility() {
