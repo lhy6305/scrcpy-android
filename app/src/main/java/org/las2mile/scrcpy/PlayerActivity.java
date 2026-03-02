@@ -1170,15 +1170,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
 
     private void ensureAgentDeployed() throws IOException, InterruptedException {
         if (agentDeployed) {
-            try {
-                String out = execAgentWithFallback("--version");
-                if (isAgentVersionOk(out)) {
-                    return;
-                }
-            } catch (IOException ignore) {
-                // Fall through and redeploy.
-            }
-            agentDeployed = false;
+            return;
         }
 
         byte[] base64 = loadAssetBase64(ApkViewerAgentClient.ASSET_NAME);
@@ -1193,10 +1185,15 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             ApkViewerAgentClient.deploy(this, serverAdr, base64, null);
         }
 
-        // Ensure the remote jar is valid and runnable (e.g. base64 command might be missing on some ROMs).
-        String out = execAgentWithFallback("--version");
-        if (!isAgentVersionOk(out)) {
-            throw new IOException("apkviewer-agent verify failed");
+        // Best-effort verify: some ROMs intermittently return empty shell output for tiny one-shot commands.
+        // Do not fail hard here, let real list/icons calls decide.
+        try {
+            String out = execAgentWithFallback("--version");
+            if (!isAgentVersionOk(out)) {
+                Log.w("scrcpy", "apkviewer-agent version check did not match; continue with deployed agent");
+            }
+        } catch (IOException e) {
+            Log.w("scrcpy", "apkviewer-agent version check failed; continue and retry on real request: " + e.getMessage());
         }
         agentDeployed = true;
     }
