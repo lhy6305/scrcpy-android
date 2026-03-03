@@ -367,17 +367,11 @@ public class Scrcpy extends Service {
                 String socketService = "localabstract:" + getSocketName(scid);
 
                 // Kill any existing server first
-                AdbStream pkillStream = openAdbStreamSerialized(adbConnection, "shell:pkill -f com.genymobile.scrcpy.Server");
-                // Wait a moment for pkill to complete and socket to be released
-                Thread.sleep(300);
-                closeQuietly(pkillStream);
+                org.las2mile.scrcpy.utils.AdbUtils.executeShellCommandWait(adbConnection, "pkill -f com.genymobile.scrcpy.Server", 5000);
 
                 int maxSize = Math.max(screenHeight, screenWidth);
-                String serverCommand = SendCommands.buildServerCommand(videoBitrate, maxSize, screenWidth, screenHeight, useAmlogicMode, scid)
-                        + " >/dev/null 2>&1";
-                serverStream = openAdbStreamSerialized(adbConnection, "shell:" + serverCommand);
-                // Give the server a little time to start up and bind to the socket
-                Thread.sleep(200);
+                String serverCommand = SendCommands.buildServerCommand(videoBitrate, maxSize, screenWidth, screenHeight, useAmlogicMode, scid);
+                org.las2mile.scrcpy.utils.AdbUtils.executeDetachedShellCommand(adbConnection, serverCommand);
 
                 IOException openVideoError = null;
                 for (int i = 0; i < 40 && letServiceRunning.get(); i++) {
@@ -584,14 +578,14 @@ public class Scrcpy extends Service {
     private AdbCrypto setupCrypto() throws IOException {
         AdbCrypto crypto;
         try {
-            crypto = AdbCrypto.loadAdbKeyPair(SendCommands.getBase64Impl(), getFileStreamPath("priv.key"), getFileStreamPath("pub.key"));
+            crypto = AdbCrypto.loadAdbKeyPair(org.las2mile.scrcpy.utils.AdbUtils.getBase64Impl(), getFileStreamPath("priv.key"), getFileStreamPath("pub.key"));
         } catch (IOException | InvalidKeySpecException | NoSuchAlgorithmException | NullPointerException e) {
             crypto = null;
         }
 
         if (crypto == null) {
             try {
-                crypto = AdbCrypto.generateAdbKeyPair(SendCommands.getBase64Impl());
+                crypto = AdbCrypto.generateAdbKeyPair(org.las2mile.scrcpy.utils.AdbUtils.getBase64Impl());
             } catch (NoSuchAlgorithmException e) {
                 throw new IOException("Failed to generate adb key pair", e);
             }

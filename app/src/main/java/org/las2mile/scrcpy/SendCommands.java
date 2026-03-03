@@ -1,29 +1,18 @@
 package org.las2mile.scrcpy;
 
-
-import static android.org.apache.commons.codec.binary.Base64.encodeBase64String;
-
 import android.content.Context;
 import android.util.Log;
 
-import com.tananaev.adblib.AdbBase64;
 import com.tananaev.adblib.AdbConnection;
-import com.tananaev.adblib.AdbCrypto;
-import com.tananaev.adblib.AdbStream;
 
-import java.io.Closeable;
+import org.las2mile.scrcpy.utils.AdbUtils;
+
 import java.io.IOException;
 import java.net.ConnectException;
-import java.net.InetSocketAddress;
 import java.net.NoRouteToHostException;
-import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
-import java.nio.charset.StandardCharsets;
-import java.security.NoSuchAlgorithmException;
-import java.security.spec.InvalidKeySpecException;
 import java.util.Locale;
-
 
 public class SendCommands {
     public enum Phase {
@@ -73,18 +62,11 @@ public class SendCommands {
         }
     }
 
+    private static final int ADB_PORT = 5555;
     private static final int CONNECT_TIMEOUT_MS = 5_000;
     private static final int SOCKET_TIMEOUT_MS = 5_000;
     private static final long PROMPT_TIMEOUT_MS = 10_000L;
-
-    public static AdbBase64 getBase64Impl() {
-        return new AdbBase64() {
-            @Override
-            public String encodeToString(byte[] arg0) {
-                return encodeBase64String(arg0);
-            }
-        };
-    }
+    private static final String REMOTE_SERVER_JAR_PATH = "/data/local/tmp/scrcpy-server.jar";
 
     static String buildServerCommand(int bitrate, int maxSize, int width, int height, boolean useAmlogicMode, int scid) {
         final StringBuilder command = new StringBuilder();
@@ -115,52 +97,16 @@ public class SendCommands {
         return command.toString();
     }
 
-    private static String buildServerStartCommand(int bitrate, int maxSize, int width, int height, boolean useAmlogicMode, int scid) {
-        return buildDetachedShellCommand(buildServerCommand(bitrate, maxSize, width, height, useAmlogicMode, scid));
-    }
-
-    private static String buildDetachedShellCommand(String command) {
-        String trimmed = command == null ? "" : command.trim();
-        if (trimmed.endsWith(";")) {
-            trimmed = trimmed.substring(0, trimmed.length() - 1);
-        }
-        if (trimmed.isEmpty()) {
-            return "";
-        }
-
-        // Keep the child alive after the adb shell stream is closed.
-        // Some vendor shells send SIGHUP to background jobs on session close unless properly detached.
-        String escaped = trimmed.replace("'", "'\"'\"'");
-        return "("
-                + "(command -v nohup >/dev/null 2>&1 && nohup sh -c '" + escaped + "')"
-                + " || "
-                + "(command -v setsid >/dev/null 2>&1 && setsid sh -c '" + escaped + "')"
-                + " || "
-                + "(" + trimmed + ")"
-                + ") >/dev/null 2>&1 < /dev/null &";
-    }
-
-    private static String buildAppendBase64LineCommand(String chunk, String targetFile) {
-        if (chunk == null) {
-            chunk = "";
-        }
-        if (chunk.indexOf('\'') >= 0) {
-            throw new IllegalArgumentException("base64 chunk must not contain single quote");
-        }
-        return " printf '%s\\n' '" + chunk + "' >> " + targetFile + "\n";
-    }
-
     public Result sendAdbCommands(Context context, final byte[] fileBase64, final String ip, int bitrate, int maxSize,
             int width, int height, boolean useAmlogicMode, int scid, ProgressListener listener) {
         if (Thread.currentThread().isInterrupted()) {
             return Result.fail(Error.CANCELLED, "Cancelled");
         }
 
-        // Use detached start so the shell channel can be closed safely after launch.
-        final String command = buildServerStartCommand(bitrate, maxSize, width, height, useAmlogicMode, scid);
+        final String command = buildServerCommand(bitrate, maxSize, width, height, useAmlogicMode, scid);
 
         try {
-            adbWrite(context, ip, fileBase64, command, listener);
+            adbWriteAndStart(context, ip, fileBase64, command, listener);
             return Result.ok();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -186,7 +132,7 @@ public class SendCommands {
         }
 
         try {
-            adbWrite(context, ip, fileBase64, null, listener);
+            adbWriteAndStart(context, ip, fileBase64, null, listener);
             return Result.ok();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -212,11 +158,8 @@ public class SendCommands {
             return Result.fail(Error.CANCELLED, "Cancelled");
         }
 
-        // Use detached start so reconnect does not keep stale shell channels alive.
-        final String command = buildServerStartCommand(bitrate, maxSize, width, height, useAmlogicMode, scid);
+        final String command = buildServerCommand(bitrate, maxSize, width, height, useAmlogicMode, scid);
 
-        // Some devices are very sensitive to reconnect timing (especially when ADB over TCP is single-connection).
-        // Retry a few times to let the previous connection fully close.
         final int maxAttempts = 6;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
@@ -274,239 +217,54 @@ public class SendCommands {
         }
     }
 
-    private static AdbCrypto setupCrypto(Context context) throws IOException {
-        AdbCrypto c;
-        try {
-            c = AdbCrypto.loadAdbKeyPair(getBase64Impl(), context.getFileStreamPath("priv.key"), context.getFileStreamPath("pub.key"));
-        } catch (IOException | InvalidKeySpecException | NoSuchAlgorithmException | NullPointerException e) {
-            // Failed to read from file
-            c = null;
-        }
-
-        if (c == null) {
-            // We couldn't load a key, so let's generate a new one
-            try {
-                c = AdbCrypto.generateAdbKeyPair(getBase64Impl());
-            } catch (NoSuchAlgorithmException e) {
-                throw new IOException("Failed to generate adb key pair", e);
-            }
-            // Save it
-            c.saveAdbKeyPair(context.getFileStreamPath("priv.key"), context.getFileStreamPath("pub.key"));
-        }
-
-        return c;
-    }
-
-    private static void adbWrite(Context context, String ip, byte[] fileBase64, String command, ProgressListener listener)
+    private static void adbWriteAndStart(Context context, String ip, byte[] fileBase64, String command, ProgressListener listener)
             throws IOException, InterruptedException {
         checkCancelled();
-        AdbCrypto crypto = setupCrypto(context);
-
         report(listener, Phase.CONNECTING_ADB);
-        Socket sock = new Socket();
+
+        AdbUtils.AdbSession session = null;
         try {
-            sock.connect(new InetSocketAddress(ip, 5555), CONNECT_TIMEOUT_MS);
-            sock.setSoTimeout(SOCKET_TIMEOUT_MS);
+            session = AdbUtils.connect(context, ip, ADB_PORT, CONNECT_TIMEOUT_MS, SOCKET_TIMEOUT_MS);
             Log.i("scrcpy", "ADB socket connection successful");
-        } catch (UnknownHostException e) {
-            throw new UnknownHostException(ip + " is not a valid host");
-        } catch (ConnectException e) {
-            throw new ConnectException("Device at " + ip + ":" + 5555 + " refused connection");
-        } catch (NoRouteToHostException e) {
-            throw new NoRouteToHostException("Couldn't find adb device at " + ip + ":" + 5555);
-        }
-
-        AdbConnection adb = null;
-        AdbStream stream = null;
-        try {
-            adb = AdbConnection.create(sock, crypto);
-            adb.connect();
-        } catch (IOException | InterruptedException e) {
-            closeQuietly(sock);
-            throw e;
-        } catch (IllegalStateException e) {
-            closeQuietly(sock);
-            throw new IOException("ADB connection in illegal state", e);
-        }
-
-        try {
+            
             report(listener, Phase.OPENING_SHELL);
-            stream = adb.open("shell:");
+            // Kill existing server before pushing or starting
+            AdbUtils.executeShellCommandWait(session.adb, "pkill -f com.genymobile.scrcpy.Server", PROMPT_TIMEOUT_MS);
 
-            report(listener, Phase.WAITING_SHELL);
-            stream.write(" \n");
-            if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-                throw new SocketTimeoutException("Timed out waiting for shell prompt");
-            }
-
-            report(listener, Phase.PUSHING_JAR);
-            int len = fileBase64.length;
-            byte[] filePart = new byte[4056];
-            int sourceOffset = 0;
-
-            stream.write(" command -v pkill >/dev/null 2>&1 && pkill -f com.genymobile.scrcpy.Server || true\n");
-            if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-                throw new SocketTimeoutException("Timed out waiting for shell prompt");
-            }
-            stream.write(" cd /data/local/tmp\n");
-            if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-                throw new SocketTimeoutException("Timed out waiting for shell prompt");
-            }
-            stream.write(" rm -f serverBase64\n");
-            if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-                throw new SocketTimeoutException("Timed out waiting for shell prompt");
-            }
-
-            while (sourceOffset < len) {
-                checkCancelled();
-                if (len - sourceOffset >= 4056) {
-                    System.arraycopy(fileBase64, sourceOffset, filePart, 0, 4056);
-                    sourceOffset = sourceOffset + 4056;
-                    String serverBase64Part = new String(filePart, StandardCharsets.US_ASCII);
-                    stream.write(buildAppendBase64LineCommand(serverBase64Part, "serverBase64"));
-                    if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-                        throw new SocketTimeoutException("Timed out waiting for shell prompt");
-                    }
-                } else {
-                    int rem = len - sourceOffset;
-                    byte[] remPart = new byte[rem];
-                    System.arraycopy(fileBase64, sourceOffset, remPart, 0, rem);
-                    sourceOffset = sourceOffset + rem;
-                    String serverBase64Part = new String(remPart, StandardCharsets.US_ASCII);
-                    stream.write(buildAppendBase64LineCommand(serverBase64Part, "serverBase64"));
-                    if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-                        throw new SocketTimeoutException("Timed out waiting for shell prompt");
-                    }
-                }
-            }
-            stream.write(" base64 -d < serverBase64 > scrcpy-server.jar && rm serverBase64\n");
-            if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-                throw new SocketTimeoutException("Timed out waiting for shell prompt");
+            if (fileBase64 != null && fileBase64.length > 0) {
+                report(listener, Phase.PUSHING_JAR);
+                AdbUtils.pushFile(session.adb, fileBase64, REMOTE_SERVER_JAR_PATH, PROMPT_TIMEOUT_MS);
             }
 
             if (command != null && !command.trim().isEmpty()) {
                 report(listener, Phase.STARTING_SERVER);
-                stream.write(command + '\n');
-                // Give the shell a short moment to spawn the detached process before the channel is closed.
-                Thread.sleep(120);
+                AdbUtils.executeDetachedShellCommand(session.adb, command);
             }
         } finally {
-            closeQuietly(stream);
-            closeQuietly(adb);
-            closeQuietly(sock);
+            AdbUtils.closeQuietly(session);
         }
     }
 
     private static void adbStartOnly(Context context, String ip, String command, ProgressListener listener)
             throws IOException, InterruptedException {
         checkCancelled();
-        AdbCrypto crypto = setupCrypto(context);
-
         report(listener, Phase.CONNECTING_ADB);
-        Socket sock = new Socket();
+
+        AdbUtils.AdbSession session = null;
         try {
-            sock.connect(new InetSocketAddress(ip, 5555), CONNECT_TIMEOUT_MS);
-            sock.setSoTimeout(SOCKET_TIMEOUT_MS);
+            session = AdbUtils.connect(context, ip, ADB_PORT, CONNECT_TIMEOUT_MS, SOCKET_TIMEOUT_MS);
             Log.i("scrcpy", "ADB socket connection successful");
-        } catch (UnknownHostException e) {
-            throw new UnknownHostException(ip + " is not a valid host");
-        } catch (ConnectException e) {
-            throw new ConnectException("Device at " + ip + ":" + 5555 + " refused connection");
-        } catch (NoRouteToHostException e) {
-            throw new NoRouteToHostException("Couldn't find adb device at " + ip + ":" + 5555);
-        }
 
-        AdbConnection adb = null;
-        AdbStream stream = null;
-        try {
-            adb = AdbConnection.create(sock, crypto);
-            adb.connect();
-        } catch (IOException | InterruptedException e) {
-            closeQuietly(sock);
-            throw e;
-        } catch (IllegalStateException e) {
-            closeQuietly(sock);
-            throw new IOException("ADB connection in illegal state", e);
-        }
-        try {
             report(listener, Phase.OPENING_SHELL);
-            stream = adb.open("shell:");
+            // Kill existing server
+            AdbUtils.executeShellCommandWait(session.adb, "pkill -f com.genymobile.scrcpy.Server", PROMPT_TIMEOUT_MS);
 
-            report(listener, Phase.WAITING_SHELL);
-            stream.write(" \n");
-            if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-                throw new SocketTimeoutException("Timed out waiting for shell prompt");
+            if (command != null && !command.trim().isEmpty()) {
+                report(listener, Phase.STARTING_SERVER);
+                AdbUtils.executeDetachedShellCommand(session.adb, command);
             }
-
-            stream.write(" command -v pkill >/dev/null 2>&1 && pkill -f com.genymobile.scrcpy.Server || true\n");
-            if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-                throw new SocketTimeoutException("Timed out waiting for shell prompt");
-            }
-            stream.write(" cd /data/local/tmp\n");
-            if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
-                throw new SocketTimeoutException("Timed out waiting for shell prompt");
-            }
-
-            report(listener, Phase.STARTING_SERVER);
-            stream.write(command + '\n');
-            // Give the shell a short moment to spawn the detached process before the channel is closed.
-            Thread.sleep(120);
         } finally {
-            closeQuietly(stream);
-            closeQuietly(adb);
-            closeQuietly(sock);
+            AdbUtils.closeQuietly(session);
         }
     }
-
-    private static void closeQuietly(Socket sock) {
-        if (sock == null) {
-            return;
-        }
-        try {
-            sock.close();
-        } catch (IOException ignore) {
-            // ignore
-        }
-    }
-
-    private static void closeQuietly(Closeable closeable) {
-        if (closeable == null) {
-            return;
-        }
-        try {
-            closeable.close();
-        } catch (IOException ignore) {
-            // ignore
-        }
-    }
-
-    private static boolean waitForPrompt(AdbStream stream, long timeoutMs) throws IOException, InterruptedException {
-        long deadline = System.currentTimeMillis() + timeoutMs;
-        String tail = "";
-        while (System.currentTimeMillis() < deadline) {
-            checkCancelled();
-            byte[] responseBytes;
-            try {
-                responseBytes = stream.read();
-            } catch (SocketTimeoutException e) {
-                // Continue polling until deadline.
-                continue;
-            }
-            if (responseBytes == null || responseBytes.length == 0) {
-                continue;
-            }
-            String response = new String(responseBytes, StandardCharsets.US_ASCII);
-            String combined = tail + response;
-            if (combined.endsWith("$ ") || combined.endsWith("# ")) {
-                return true;
-            }
-            if (combined.length() >= 2) {
-                tail = combined.substring(combined.length() - 2);
-            } else {
-                tail = combined;
-            }
-        }
-        return false;
-    }
-
 }
