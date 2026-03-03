@@ -26,7 +26,7 @@ public class SendCommandsCommandBuildTest {
         assertTrue(cmd.contains(" max_size=1920"));
         assertTrue(cmd.contains(" cleanup=false"));
         assertTrue(cmd.startsWith("("));
-        assertTrue(cmd.endsWith(") >/dev/null 2>&1 &"));
+        assertTrue(cmd.endsWith(") >/dev/null 2>&1 < /dev/null &"));
         assertFalse(cmd.contains(";"));
 
         assertFalse(cmd.contains(" amlogic_v4l2=true"));

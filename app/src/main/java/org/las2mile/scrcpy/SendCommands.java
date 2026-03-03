@@ -124,7 +124,17 @@ public class SendCommands {
         if (trimmed.isEmpty()) {
             return "";
         }
-        return "(" + trimmed + ") >/dev/null 2>&1 &";
+
+        // Keep the child alive after the adb shell stream is closed.
+        // Some vendor shells send SIGHUP to background jobs on session close unless properly detached.
+        String escaped = trimmed.replace("'", "'\"'\"'");
+        return "("
+                + "(command -v nohup >/dev/null 2>&1 && nohup sh -c '" + escaped + "')"
+                + " || "
+                + "(command -v setsid >/dev/null 2>&1 && setsid sh -c '" + escaped + "')"
+                + " || "
+                + "(" + trimmed + ")"
+                + ") >/dev/null 2>&1 < /dev/null &";
     }
 
     private static String buildAppendBase64LineCommand(String chunk, String targetFile) {
@@ -347,6 +357,8 @@ public class SendCommands {
 
             report(listener, Phase.STARTING_SERVER);
             stream.write(command + '\n');
+            // Give the shell a short moment to spawn the detached process before the channel is closed.
+            Thread.sleep(120);
         } finally {
             closeQuietly(stream);
             closeQuietly(adb);
@@ -406,6 +418,8 @@ public class SendCommands {
 
             report(listener, Phase.STARTING_SERVER);
             stream.write(command + '\n');
+            // Give the shell a short moment to spawn the detached process before the channel is closed.
+            Thread.sleep(120);
         } finally {
             closeQuietly(stream);
             closeQuietly(adb);
