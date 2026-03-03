@@ -97,6 +97,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
     private static final long LAUNCHER_LIST_CACHE_TTL_MS = 3 * 60_000L;
     private static final long LAUNCHER_LIST_CACHE_MAX_AGE_MS = 24 * 60 * 60_000L;
     private static final String LAUNCHER_LIST_CACHE_HEADER_PREFIX = "APP_CACHE_V1|";
+    private static final boolean ENABLE_PROXIMITY_POWER_TOGGLE = false;
 
     private static final SecureRandom SCID_RANDOM = new SecureRandom();
 
@@ -256,10 +257,12 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         surface = holder.getSurface();
         videoContainer.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> applySurfaceAspectRatio());
 
-        sensorManager = (SensorManager) this.getSystemService(SENSOR_SERVICE);
-        Sensor proximity = sensorManager != null ? sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY) : null;
-        if (sensorManager != null && proximity != null) {
-            sensorManager.registerListener(this, proximity, SensorManager.SENSOR_DELAY_NORMAL);
+        if (ENABLE_PROXIMITY_POWER_TOGGLE) {
+            sensorManager = (SensorManager) this.getSystemService(SENSOR_SERVICE);
+            Sensor proximity = sensorManager != null ? sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY) : null;
+            if (sensorManager != null && proximity != null) {
+                sensorManager.registerListener(this, proximity, SensorManager.SENSOR_DELAY_NORMAL);
+            }
         }
 
         sendCommands = new SendCommands();
@@ -2175,7 +2178,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         }
         launcherExecutor.shutdownNow();
         stopScrcpyServiceIfRunning();
-        if (sensorManager != null) {
+        if (ENABLE_PROXIMITY_POWER_TOGGLE && sensorManager != null) {
             sensorManager.unregisterListener(this);
         }
         super.onDestroy();
@@ -2183,15 +2186,15 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
 
     @Override
     public void onSensorChanged(SensorEvent sensorEvent) {
+        if (!ENABLE_PROXIMITY_POWER_TOGGLE) {
+            return;
+        }
         if (sensorEvent.sensor != null && sensorEvent.sensor.getType() == Sensor.TYPE_PROXIMITY) {
-            if (sensorEvent.values[0] == 0) {
-                if (serviceBound && scrcpy != null) {
-                    scrcpy.sendKeyevent(28);
-                }
-            } else {
-                if (serviceBound && scrcpy != null) {
-                    scrcpy.sendKeyevent(29);
-                }
+            boolean near = sensorEvent.values != null
+                    && sensorEvent.values.length > 0
+                    && sensorEvent.values[0] < sensorEvent.sensor.getMaximumRange();
+            if (near && serviceBound && scrcpy != null) {
+                scrcpy.sendKeyevent(KeyEvent.KEYCODE_POWER);
             }
         }
     }

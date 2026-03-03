@@ -88,7 +88,7 @@ public class SendCommands {
 
     private static String buildServerStartCommand(int bitrate, int maxSize, int width, int height, boolean useAmlogicMode, int scid) {
         final StringBuilder command = new StringBuilder();
-        command.append(" CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server 3.3.4");
+        command.append("CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server 3.3.4");
         command.append(" log_level=info");
         command.append(String.format(Locale.US, " scid=%08x", scid & 0x7fffffff));
         command.append(" video=true");
@@ -113,7 +113,28 @@ public class SendCommands {
             command.append(" amlogic_v4l2_format=nv21");
         }
         command.append(";");
-        return command.toString();
+        return buildDetachedShellCommand(command.toString());
+    }
+
+    private static String buildDetachedShellCommand(String command) {
+        String trimmed = command == null ? "" : command.trim();
+        if (trimmed.endsWith(";")) {
+            trimmed = trimmed.substring(0, trimmed.length() - 1);
+        }
+        if (trimmed.isEmpty()) {
+            return "";
+        }
+        return "(" + trimmed + ") >/dev/null 2>&1 &";
+    }
+
+    private static String buildAppendBase64LineCommand(String chunk, String targetFile) {
+        if (chunk == null) {
+            chunk = "";
+        }
+        if (chunk.indexOf('\'') >= 0) {
+            throw new IllegalArgumentException("base64 chunk must not contain single quote");
+        }
+        return " printf '%s\\n' '" + chunk + "' >> " + targetFile + "\n";
     }
 
     public Result sendAdbCommands(Context context, final byte[] fileBase64, final String ip, int bitrate, int maxSize,
@@ -122,7 +143,7 @@ public class SendCommands {
             return Result.fail(Error.CANCELLED, "Cancelled");
         }
 
-        // Keep initial deploy/start behavior compatible with older working flows.
+        // Use detached start so the shell channel can be closed safely after launch.
         final String command = buildServerStartCommand(bitrate, maxSize, width, height, useAmlogicMode, scid);
 
         try {
@@ -152,8 +173,7 @@ public class SendCommands {
             return Result.fail(Error.CANCELLED, "Cancelled");
         }
 
-        // Use the same non-detached server start style as initial deploy for vendor shells
-        // that bind process lifetime to the launching shell/session.
+        // Use detached start so reconnect does not keep stale shell channels alive.
         final String command = buildServerStartCommand(bitrate, maxSize, width, height, useAmlogicMode, scid);
 
         // Some devices are very sensitive to reconnect timing (especially when ADB over TCP is single-connection).
@@ -304,7 +324,7 @@ public class SendCommands {
                     System.arraycopy(fileBase64, sourceOffset, filePart, 0, 4056);
                     sourceOffset = sourceOffset + 4056;
                     String serverBase64Part = new String(filePart, StandardCharsets.US_ASCII);
-                    stream.write(" echo " + serverBase64Part + " >> serverBase64\n");
+                    stream.write(buildAppendBase64LineCommand(serverBase64Part, "serverBase64"));
                     if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
                         throw new SocketTimeoutException("Timed out waiting for shell prompt");
                     }
@@ -314,7 +334,7 @@ public class SendCommands {
                     System.arraycopy(fileBase64, sourceOffset, remPart, 0, rem);
                     sourceOffset = sourceOffset + rem;
                     String serverBase64Part = new String(remPart, StandardCharsets.US_ASCII);
-                    stream.write(" echo " + serverBase64Part + " >> serverBase64\n");
+                    stream.write(buildAppendBase64LineCommand(serverBase64Part, "serverBase64"));
                     if (!waitForPrompt(stream, PROMPT_TIMEOUT_MS)) {
                         throw new SocketTimeoutException("Timed out waiting for shell prompt");
                     }
@@ -328,13 +348,9 @@ public class SendCommands {
             report(listener, Phase.STARTING_SERVER);
             stream.write(command + '\n');
         } finally {
-            // For initial deploy/start, keep historical behavior (leave channel open) because
-            // some vendor shells tie server lifetime to this shell session.
-            if (command != null && command.startsWith("(")) {
-                closeQuietly(stream);
-                closeQuietly(adb);
-                closeQuietly(sock);
-            }
+            closeQuietly(stream);
+            closeQuietly(adb);
+            closeQuietly(sock);
         }
     }
 
@@ -369,7 +385,6 @@ public class SendCommands {
             closeQuietly(sock);
             throw new IOException("ADB connection in illegal state", e);
         }
-        boolean keepOpen = false;
         try {
             report(listener, Phase.OPENING_SHELL);
             stream = adb.open("shell:");
@@ -391,18 +406,10 @@ public class SendCommands {
 
             report(listener, Phase.STARTING_SERVER);
             stream.write(command + '\n');
-
-            // Keep channel open for non-detached command to preserve historical working behavior.
-            keepOpen = command != null && !command.startsWith("(");
-            if (!keepOpen) {
-                Thread.sleep(120);
-            }
         } finally {
-            if (!keepOpen) {
-                closeQuietly(stream);
-                closeQuietly(adb);
-                closeQuietly(sock);
-            }
+            closeQuietly(stream);
+            closeQuietly(adb);
+            closeQuietly(sock);
         }
     }
 
@@ -433,7 +440,13 @@ public class SendCommands {
         String tail = "";
         while (System.currentTimeMillis() < deadline) {
             checkCancelled();
-            byte[] responseBytes = stream.read();
+            byte[] responseBytes;
+            try {
+                responseBytes = stream.read();
+            } catch (SocketTimeoutException e) {
+                // Continue polling until deadline.
+                continue;
+            }
             if (responseBytes == null || responseBytes.length == 0) {
                 continue;
             }

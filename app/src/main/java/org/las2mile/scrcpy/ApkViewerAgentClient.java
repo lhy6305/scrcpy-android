@@ -34,7 +34,7 @@ public final class ApkViewerAgentClient {
 
     private static final int ADB_PORT = 5555;
     private static final int CONNECT_TIMEOUT_MS = 5_000;
-    private static final int SOCKET_TIMEOUT_MS = 20_000;
+    private static final int SOCKET_TIMEOUT_MS = 10_000;
     private static final long PROMPT_TIMEOUT_MS = 10_000L;
 
     private ApkViewerAgentClient() {
@@ -82,14 +82,14 @@ public final class ApkViewerAgentClient {
                     System.arraycopy(agentJarBase64, sourceOffset, filePart, 0, filePart.length);
                     sourceOffset += filePart.length;
                     String part = new String(filePart, StandardCharsets.US_ASCII);
-                    shell.write(" echo " + part + " >> apkviewerAgentBase64\n");
+                    shell.write(buildAppendBase64LineCommand(part, "apkviewerAgentBase64"));
                 } else {
                     int rem = len - sourceOffset;
                     byte[] remPart = new byte[rem];
                     System.arraycopy(agentJarBase64, sourceOffset, remPart, 0, rem);
                     sourceOffset += rem;
                     String part = new String(remPart, StandardCharsets.US_ASCII);
-                    shell.write(" echo " + part + " >> apkviewerAgentBase64\n");
+                    shell.write(buildAppendBase64LineCommand(part, "apkviewerAgentBase64"));
                 }
 
                 if (!waitForPrompt(shell, PROMPT_TIMEOUT_MS)) {
@@ -145,14 +145,14 @@ public final class ApkViewerAgentClient {
                     System.arraycopy(agentJarBase64, sourceOffset, filePart, 0, filePart.length);
                     sourceOffset += filePart.length;
                     String part = new String(filePart, StandardCharsets.US_ASCII);
-                    shell.write(" echo " + part + " >> apkviewerAgentBase64\n");
+                    shell.write(buildAppendBase64LineCommand(part, "apkviewerAgentBase64"));
                 } else {
                     int rem = len - sourceOffset;
                     byte[] remPart = new byte[rem];
                     System.arraycopy(agentJarBase64, sourceOffset, remPart, 0, rem);
                     sourceOffset += rem;
                     String part = new String(remPart, StandardCharsets.US_ASCII);
-                    shell.write(" echo " + part + " >> apkviewerAgentBase64\n");
+                    shell.write(buildAppendBase64LineCommand(part, "apkviewerAgentBase64"));
                 }
 
                 if (!waitForPrompt(shell, PROMPT_TIMEOUT_MS)) {
@@ -258,6 +258,16 @@ public final class ApkViewerAgentClient {
         }
     }
 
+    private static String buildAppendBase64LineCommand(String chunk, String targetFile) {
+        if (chunk == null) {
+            chunk = "";
+        }
+        if (chunk.indexOf('\'') >= 0) {
+            throw new IllegalArgumentException("base64 chunk must not contain single quote");
+        }
+        return "printf '%s\\n' '" + chunk + "' >> " + targetFile + "\n";
+    }
+
     private static AdbStream openAdbStreamSerialized(AdbConnection adb, String destination)
             throws IOException, InterruptedException {
         synchronized (adb) {
@@ -270,7 +280,13 @@ public final class ApkViewerAgentClient {
         String tail = "";
         while (System.currentTimeMillis() < deadline) {
             checkCancelled();
-            byte[] responseBytes = stream.read();
+            byte[] responseBytes;
+            try {
+                responseBytes = stream.read();
+            } catch (SocketTimeoutException e) {
+                // Continue polling until deadline.
+                continue;
+            }
             if (responseBytes == null || responseBytes.length == 0) {
                 continue;
             }

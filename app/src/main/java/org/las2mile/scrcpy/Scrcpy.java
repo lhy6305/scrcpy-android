@@ -74,6 +74,9 @@ public class Scrcpy extends Service {
     private static final int CONTROL_EXEC_SHELL_TEXT_MAX_LENGTH = (1 << 18) - 13;
     private static final int DEVICE_EXEC_SHELL_RESULT_MAX_LENGTH = (1 << 18) - 13;
     private static final long CONTROL_EXEC_SHELL_TIMEOUT_MS = 20_000L;
+    private static final int ADB_PORT = 5555;
+    private static final int ADB_CONNECT_TIMEOUT_MS = 5_000;
+    private static final int ADB_SOCKET_TIMEOUT_MS = 5_000;
 
     private static final int VIDEO_CODEC_H264 = 0x68_32_36_34;
     private static final int VIDEO_CODEC_H265 = 0x68_32_36_35;
@@ -505,8 +508,10 @@ public class Scrcpy extends Service {
 
     private AdbConnection openAdbConnection(String host) throws IOException, InterruptedException {
         AdbCrypto crypto = setupCrypto();
-        java.net.Socket socket = new java.net.Socket(host, 5555);
+        java.net.Socket socket = new java.net.Socket();
         try {
+            socket.connect(new java.net.InetSocketAddress(host, ADB_PORT), ADB_CONNECT_TIMEOUT_MS);
+            socket.setSoTimeout(ADB_SOCKET_TIMEOUT_MS);
             AdbConnection connection = AdbConnection.create(socket, crypto);
             connection.connect();
             return connection;

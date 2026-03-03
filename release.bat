@@ -5,56 +5,15 @@ chcp 65001 >nul
 set "ROOT_DIR=%~dp0"
 cd /d "%ROOT_DIR%"
 
-set "JAVA_HOME=J:\java_packages\jdk-17.0.7"
-set "ANDROID_SDK_ROOT=J:\0a-buildtools\android_sdk"
-set "ANDROID_HOME=%ANDROID_SDK_ROOT%"
-set "GRADLE_USER_HOME=%ROOT_DIR%.gradle-home"
-set "ANDROID_USER_HOME=%ROOT_DIR%.android-home"
-set "USER_HOME_DIR=%ROOT_DIR%.user-home"
-set "GRADLE_OPTS=-Duser.home=%USER_HOME_DIR% -Dfile.encoding=UTF-8"
 set "OUT_DIR=%ROOT_DIR%release-out"
 set "BUILD_TOOLS_VERSION=35.0.0"
-set "BUILD_TOOLS_DIR=%ANDROID_SDK_ROOT%\build-tools\%BUILD_TOOLS_VERSION%"
-set "ZIPALIGN_EXE=%BUILD_TOOLS_DIR%\zipalign.exe"
-set "APKSIGNER_EXE=%BUILD_TOOLS_DIR%\apksigner.bat"
 set "KEYSTORE_PATH=D:\apk-resign-project\buildtools\keystore.jks"
 set "KEY_ALIAS=key0"
 set "KEY_PASS=000000"
 set "DO_ZIPALIGN=0"
 
-if not exist "%JAVA_HOME%\bin\java.exe" (
-    echo [ERROR] JAVA_HOME is invalid: "%JAVA_HOME%"
-    exit /b 1
-)
-
-if not exist "%ANDROID_SDK_ROOT%" (
-    echo [ERROR] ANDROID_SDK_ROOT is invalid: "%ANDROID_SDK_ROOT%"
-    exit /b 1
-)
-
-if not exist "%ZIPALIGN_EXE%" (
-    echo [ERROR] zipalign not found: "%ZIPALIGN_EXE%"
-    exit /b 1
-)
-
-if not exist "%APKSIGNER_EXE%" (
-    echo [ERROR] apksigner not found: "%APKSIGNER_EXE%"
-    exit /b 1
-)
-
 if not exist "%KEYSTORE_PATH%" (
     echo [ERROR] Keystore not found: "%KEYSTORE_PATH%"
-    exit /b 1
-)
-
-if not exist "%GRADLE_USER_HOME%" mkdir "%GRADLE_USER_HOME%"
-if not exist "%ANDROID_USER_HOME%" mkdir "%ANDROID_USER_HOME%"
-if not exist "%USER_HOME_DIR%" mkdir "%USER_HOME_DIR%"
-if not exist "%USER_HOME_DIR%\.android" mkdir "%USER_HOME_DIR%\.android"
-
-echo sdk.dir=J:\\0a-buildtools\\android_sdk> "%ROOT_DIR%local.properties"
-if errorlevel 1 (
-    echo [ERROR] Failed to write local.properties
     exit /b 1
 )
 
@@ -83,6 +42,29 @@ if errorlevel 1 goto :fail
 echo [INFO] Building app release...
 call "%ROOT_DIR%gradlew.bat" --no-daemon :app:assembleRelease
 if errorlevel 1 goto :fail
+
+set "ANDROID_SDK_ROOT="
+for /f "tokens=1,* delims==" %%A in ('findstr /b /c:"sdk.dir=" "%ROOT_DIR%local.properties"') do set "ANDROID_SDK_ROOT=%%B"
+
+if not defined ANDROID_SDK_ROOT (
+    echo [ERROR] sdk.dir not found in local.properties.
+    goto :fail
+)
+
+set "ANDROID_SDK_ROOT=%ANDROID_SDK_ROOT:\\=\%"
+set "BUILD_TOOLS_DIR=%ANDROID_SDK_ROOT%\build-tools\%BUILD_TOOLS_VERSION%"
+set "ZIPALIGN_EXE=%BUILD_TOOLS_DIR%\zipalign.exe"
+set "APKSIGNER_EXE=%BUILD_TOOLS_DIR%\apksigner.bat"
+
+if not exist "%ZIPALIGN_EXE%" (
+    echo [ERROR] zipalign not found: "%ZIPALIGN_EXE%"
+    goto :fail
+)
+
+if not exist "%APKSIGNER_EXE%" (
+    echo [ERROR] apksigner not found: "%APKSIGNER_EXE%"
+    goto :fail
+)
 
 set "SERVER_APK="
 for %%F in ("%ROOT_DIR%server\build\outputs\apk\release\*-release-unsigned.apk") do (
