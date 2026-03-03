@@ -41,6 +41,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.net.SocketTimeoutException;
 import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
 import java.util.HashMap;
@@ -426,8 +427,16 @@ public class Scrcpy extends Service {
                         }
                     }
 
-                    if ((updateAvailable.get() || !decoderConfigured)
-                            && codecConfigPacket != null && surface != null) {
+                    if (decoderConfigured && videoDecoder != null && !videoDecoder.isConfigured()) {
+                        // Decoder may reset itself on codec/surface state errors. Force reconfigure on next loop.
+                        decoderConfigured = false;
+                        pendingMergeConfigPacket = codecConfigPacket;
+                        Log.w("scrcpy", "Video decoder lost configured state, scheduling reconfigure");
+                    }
+
+                    if (shouldConfigureVideoDecoder(updateAvailable.get(), decoderConfigured,
+                            videoDecoder != null && videoDecoder.isConfigured(),
+                            codecConfigPacket != null, surface != null)) {
                         try {
                             updateAvailable.set(false);
                             configureVideoDecoder(videoMimeType, codecConfigPacket);
@@ -781,6 +790,14 @@ public class Scrcpy extends Service {
         videoDecoder = new VideoDecoder();
         videoDecoder.setVideoSizeListener(this::notifyVideoSizeChanged);
         videoDecoder.start();
+    }
+
+    static boolean shouldConfigureVideoDecoder(boolean updateAvailable, boolean decoderConfigured,
+            boolean decoderHealthy, boolean hasCodecConfig, boolean hasSurface) {
+        if (!hasCodecConfig || !hasSurface) {
+            return false;
+        }
+        return updateAvailable || !decoderConfigured || !decoderHealthy;
     }
 
     private void stopVideoDecoder() {
@@ -1390,9 +1407,16 @@ public class Scrcpy extends Service {
 
         private boolean refill() throws IOException {
             while (!closed) {
+                if (Thread.currentThread().isInterrupted()) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("Interrupted while reading from adb stream");
+                }
                 byte[] chunk;
                 try {
                     chunk = stream.read();
+                } catch (SocketTimeoutException e) {
+                    // Keep polling the stream; temporary read timeout is not a fatal connection error.
+                    continue;
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new IOException("Interrupted while reading from adb stream", e);

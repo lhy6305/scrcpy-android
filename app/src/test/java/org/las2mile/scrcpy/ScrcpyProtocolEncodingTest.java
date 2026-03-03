@@ -9,6 +9,8 @@ import java.util.Arrays;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class ScrcpyProtocolEncodingTest {
 
@@ -60,6 +62,18 @@ public class ScrcpyProtocolEncodingTest {
         assertEquals(65535, invokeFloatToU16FixedPoint(2.0f));
     }
 
+    @Test
+    public void shouldConfigureVideoDecoder_reconfiguresWhenDecoderLost() throws Exception {
+        boolean should = invokeShouldConfigureVideoDecoder(false, true, false, true, true);
+        assertTrue(should);
+    }
+
+    @Test
+    public void shouldConfigureVideoDecoder_respectsPrerequisites() throws Exception {
+        assertFalse(invokeShouldConfigureVideoDecoder(true, true, true, false, true));
+        assertFalse(invokeShouldConfigureVideoDecoder(true, true, true, true, false));
+    }
+
     private static byte[] invokeGetClippedUtf8(String text, int maxBytes) throws Exception {
         Method method = Scrcpy.class.getDeclaredMethod("getClippedUtf8", String.class, int.class);
         method.setAccessible(true);
@@ -82,6 +96,28 @@ public class ScrcpyProtocolEncodingTest {
         Method method = Scrcpy.class.getDeclaredMethod("floatToU16FixedPoint", float.class);
         method.setAccessible(true);
         return (Integer) method.invoke(null, value);
+    }
+
+    private static boolean invokeShouldConfigureVideoDecoder(
+            boolean updateAvailable,
+            boolean decoderConfigured,
+            boolean decoderHealthy,
+            boolean hasCodecConfig,
+            boolean hasSurface) throws Exception {
+        Method method = Scrcpy.class.getDeclaredMethod(
+                "shouldConfigureVideoDecoder",
+                boolean.class,
+                boolean.class,
+                boolean.class,
+                boolean.class,
+                boolean.class);
+        method.setAccessible(true);
+        return (Boolean) method.invoke(null,
+                updateAvailable,
+                decoderConfigured,
+                decoderHealthy,
+                hasCodecConfig,
+                hasSurface);
     }
 
     private static int getPrivateStaticInt(String fieldName) throws Exception {

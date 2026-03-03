@@ -3,6 +3,7 @@ package org.las2mile.scrcpy.decoder;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.os.Build;
+import android.util.Log;
 import android.view.Surface;
 
 import java.io.IOException;
@@ -33,6 +34,10 @@ public class VideoDecoder {
 
     public void setVideoSizeListener(VideoSizeListener listener) {
         mVideoSizeListener = listener;
+    }
+
+    public boolean isConfigured() {
+        return mIsConfigured.get();
     }
 
 
@@ -137,6 +142,7 @@ public class VideoDecoder {
                         }
                     }
                 } catch (IllegalStateException e) {
+                    Log.w("scrcpy", "VideoDecoder input path failed, resetting codec", e);
                     mIsConfigured.set(false);
                     releaseCodec();
                 }
@@ -167,6 +173,7 @@ public class VideoDecoder {
                         }
                     } catch (IllegalStateException e) {
                         // Surface/codecs may be transiently invalid during orientation/insets changes.
+                        Log.w("scrcpy", "VideoDecoder output path failed, resetting codec", e);
                         mIsConfigured.set(false);
                         releaseCodec();
                     }
