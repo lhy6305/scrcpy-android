@@ -86,7 +86,7 @@ public class SendCommands {
         };
     }
 
-    private static String buildServerStartCommand(int bitrate, int maxSize, int width, int height, boolean useAmlogicMode, int scid) {
+    static String buildServerCommand(int bitrate, int maxSize, int width, int height, boolean useAmlogicMode, int scid) {
         final StringBuilder command = new StringBuilder();
         command.append("CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server 3.3.4");
         command.append(" log_level=info");
@@ -112,8 +112,11 @@ public class SendCommands {
             command.append(" amlogic_v4l2_reqbufs=4");
             command.append(" amlogic_v4l2_format=nv21");
         }
-        command.append(";");
-        return buildDetachedShellCommand(command.toString());
+        return command.toString();
+    }
+
+    private static String buildServerStartCommand(int bitrate, int maxSize, int width, int height, boolean useAmlogicMode, int scid) {
+        return buildDetachedShellCommand(buildServerCommand(bitrate, maxSize, width, height, useAmlogicMode, scid));
     }
 
     private static String buildDetachedShellCommand(String command) {
@@ -158,6 +161,32 @@ public class SendCommands {
 
         try {
             adbWrite(context, ip, fileBase64, command, listener);
+            return Result.ok();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Result.fail(Error.CANCELLED, "Cancelled");
+        } catch (UnknownHostException e) {
+            return Result.fail(Error.INVALID_HOST, e.getMessage());
+        } catch (ConnectException e) {
+            return Result.fail(Error.CONNECTION_REFUSED, e.getMessage());
+        } catch (NoRouteToHostException e) {
+            return Result.fail(Error.NO_ROUTE, e.getMessage());
+        } catch (SocketTimeoutException e) {
+            return Result.fail(Error.TIMEOUT, e.getMessage());
+        } catch (IOException e) {
+            return Result.fail(Error.IO, e.getMessage());
+        } catch (RuntimeException e) {
+            return Result.fail(Error.UNKNOWN, e.getMessage());
+        }
+    }
+
+    public Result pushServerJar(Context context, final byte[] fileBase64, final String ip, ProgressListener listener) {
+        if (Thread.currentThread().isInterrupted()) {
+            return Result.fail(Error.CANCELLED, "Cancelled");
+        }
+
+        try {
+            adbWrite(context, ip, fileBase64, null, listener);
             return Result.ok();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -355,10 +384,12 @@ public class SendCommands {
                 throw new SocketTimeoutException("Timed out waiting for shell prompt");
             }
 
-            report(listener, Phase.STARTING_SERVER);
-            stream.write(command + '\n');
-            // Give the shell a short moment to spawn the detached process before the channel is closed.
-            Thread.sleep(120);
+            if (command != null && !command.trim().isEmpty()) {
+                report(listener, Phase.STARTING_SERVER);
+                stream.write(command + '\n');
+                // Give the shell a short moment to spawn the detached process before the channel is closed.
+                Thread.sleep(120);
+            }
         } finally {
             closeQuietly(stream);
             closeQuietly(adb);

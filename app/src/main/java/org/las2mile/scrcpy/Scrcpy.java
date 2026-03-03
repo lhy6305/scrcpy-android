@@ -106,6 +106,8 @@ public class Scrcpy extends Service {
     private volatile Surface surface;
     private int screenWidth;
     private int screenHeight;
+    private int videoBitrate;
+    private boolean useAmlogicMode;
     private VideoDecoder videoDecoder;
     private final AtomicBoolean updateAvailable = new AtomicBoolean(false);
     private final IBinder mBinder = new MyServiceBinder();
@@ -153,7 +155,7 @@ public class Scrcpy extends Service {
         updateAvailable.set(true);
     }
 
-    public void start(Surface surface, String serverAdr, int screenHeight, int screenWidth, int scid) {
+    public void start(Surface surface, String serverAdr, int screenHeight, int screenWidth, int videoBitrate, boolean useAmlogicMode, int scid) {
         letServiceRunning.set(true);
         if (clipboardSyncEnabled) {
             registerClipboardSync();
@@ -167,6 +169,8 @@ public class Scrcpy extends Service {
         notifyConnectionStateChanged(false);
         this.screenHeight = screenHeight;
         this.screenWidth = screenWidth;
+        this.videoBitrate = videoBitrate;
+        this.useAmlogicMode = useAmlogicMode;
         this.surface = surface;
         connectionThread = new Thread(this::startConnection, "scrcpy-connection");
         connectionThread.start();
@@ -346,6 +350,7 @@ public class Scrcpy extends Service {
         int attempts = 50;
         while (attempts != 0 && letServiceRunning.get()) {
             AdbConnection adbConnection = null;
+            AdbStream serverStream = null;
             AdbStream videoStream = null;
             AdbStream audioStream = null;
             AdbStream controlStream = null;
@@ -361,7 +366,36 @@ public class Scrcpy extends Service {
                 adbConnectionForTools = adbConnection;
                 String socketService = "localabstract:" + getSocketName(scid);
 
-                videoStream = openAdbStreamSerialized(adbConnection, socketService);
+                // Kill any existing server first
+                AdbStream pkillStream = openAdbStreamSerialized(adbConnection, "shell:pkill -f com.genymobile.scrcpy.Server");
+                // Wait a moment for pkill to complete and socket to be released
+                Thread.sleep(300);
+                closeQuietly(pkillStream);
+
+                int maxSize = Math.max(screenHeight, screenWidth);
+                String serverCommand = SendCommands.buildServerCommand(videoBitrate, maxSize, screenWidth, screenHeight, useAmlogicMode, scid)
+                        + " >/dev/null 2>&1";
+                serverStream = openAdbStreamSerialized(adbConnection, "shell:" + serverCommand);
+                // Give the server a little time to start up and bind to the socket
+                Thread.sleep(200);
+
+                IOException openVideoError = null;
+                for (int i = 0; i < 40 && letServiceRunning.get(); i++) {
+                    try {
+                        videoStream = openAdbStreamSerialized(adbConnection, socketService);
+                        openVideoError = null;
+                        break;
+                    } catch (IOException e) {
+                        openVideoError = e;
+                        Thread.sleep(75);
+                    }
+                }
+                if (videoStream == null) {
+                    if (openVideoError != null) {
+                        throw openVideoError;
+                    }
+                    throw new IOException("Failed to open scrcpy video stream");
+                }
                 videoInputStream = new DataInputStream(new AdbStreamInputStream(videoStream));
                 int dummyByte = videoInputStream.read();
                 if (dummyByte == -1) {
@@ -479,6 +513,11 @@ public class Scrcpy extends Service {
                 }
                 sleepBeforeRetry();
             } catch (IOException e) {
+                if (attempts == 0) {
+                    notifyConnectionError(e.getMessage());
+                    notifyConnectionStateChanged(false);
+                    break;
+                }
                 attempts--;
                 if (attempts == 0) {
                     notifyConnectionError(e.getMessage());
@@ -505,6 +544,7 @@ public class Scrcpy extends Service {
                 closeQuietly(controlStream);
                 closeQuietly(audioStream);
                 closeQuietly(videoStream);
+                closeQuietly(serverStream);
                 closeQuietly(adbConnection);
                 joinThread(controlSender);
                 joinThread(controlReceiver);

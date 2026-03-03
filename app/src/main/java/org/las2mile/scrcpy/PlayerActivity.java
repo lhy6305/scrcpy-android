@@ -170,7 +170,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             scrcpy.setServiceCallbacks(PlayerActivity.this);
             scrcpy.setClipboardSyncEnabled(clipboardSyncEnabled);
             serviceBound = true;
-            scrcpy.start(surface, serverAdr, screenHeight, screenWidth, sessionScid);
+            scrcpy.start(surface, serverAdr, screenHeight, screenWidth, videoBitrate, useAmlogicMode, sessionScid);
         }
 
         @Override
@@ -290,16 +290,10 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
                 return;
             }
 
-            SendCommands.Result result = sendCommands.sendAdbCommands(
+            SendCommands.Result result = sendCommands.pushServerJar(
                     PlayerActivity.this,
                     fileBase64,
                     serverAdr,
-                    videoBitrate,
-                    Math.max(screenHeight, screenWidth),
-                    screenWidth,
-                    screenHeight,
-                    useAmlogicMode,
-                    sessionScid,
                     phase -> runOnUiThread(() -> showConnectingUi(getStatusTextForPhase(phase), false))
             );
 
@@ -713,30 +707,8 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         lastRemoteOrientation = REMOTE_ORIENTATION_UNKNOWN;
         launcherPrefetchScheduled.set(false);
 
-        showConnectingUi(R.string.status_connecting_adb, false);
-        deployThread = new Thread(() -> {
-            SendCommands.Result result = sendCommands.startServerOnly(
-                    PlayerActivity.this,
-                    serverAdr,
-                    videoBitrate,
-                    Math.max(screenHeight, screenWidth),
-                    screenWidth,
-                    screenHeight,
-                    useAmlogicMode,
-                    sessionScid,
-                    phase -> runOnUiThread(() -> showConnectingUi(getStatusTextForPhase(phase), false))
-            );
-
-            runOnUiThread(() -> {
-                if (!result.success) {
-                    showErrorUi(getErrorTextForSendCommands(result.error));
-                    return;
-                }
-                showConnectingUi(R.string.status_connecting, false);
-                startScrcpyServiceAndBind();
-            });
-        }, "scrcpy-reconnect");
-        deployThread.start();
+        showConnectingUi(R.string.status_connecting, false);
+        startScrcpyServiceAndBind();
     }
 
     private void sendKeyIfAllowed(int keyCode) {
