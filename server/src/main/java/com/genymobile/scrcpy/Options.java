@@ -85,8 +85,8 @@ public class Options {
     private int amlogicV4l2Rotation = -1;
     private int amlogicV4l2CropLeft;
     private int amlogicV4l2CropTop;
-    private int amlogicV4l2CropWidth = 1280;
-    private int amlogicV4l2CropHeight = 720;
+    private int amlogicV4l2CropWidth;
+    private int amlogicV4l2CropHeight;
     private int amlogicV4l2ReqBufCount = 4;
     private int amlogicV4l2PixelFormat = AML_V4L2_FMT_NV21; // NV21
     private boolean amlogicV4l2FallbackDevice;
@@ -885,13 +885,6 @@ public class Options {
             if (!amlogicFpsExplicit && options.maxFps > 0) {
                 options.amlogicV4l2Fps = inferAmlogicFps(options.maxFps);
             }
-        }
-
-        if (options.amlogicV4l2 && !options.amlogicV4l2CropSet) {
-            options.amlogicV4l2CropLeft = 0;
-            options.amlogicV4l2CropTop = 0;
-            options.amlogicV4l2CropWidth = options.amlogicV4l2Width;
-            options.amlogicV4l2CropHeight = options.amlogicV4l2Height;
         }
 
         return options;
