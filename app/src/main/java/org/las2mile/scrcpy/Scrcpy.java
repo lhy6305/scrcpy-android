@@ -375,25 +375,35 @@ public class Scrcpy extends Service {
 
                 IOException openVideoError = null;
                 for (int i = 0; i < 40 && letServiceRunning.get(); i++) {
+                    AdbStream candidateVideoStream = null;
+                    DataInputStream candidateVideoInputStream = null;
                     try {
-                        videoStream = openAdbStreamSerialized(adbConnection, socketService);
+                        candidateVideoStream = openAdbStreamSerialized(adbConnection, socketService);
+                        candidateVideoInputStream = new DataInputStream(new AdbStreamInputStream(candidateVideoStream));
+
+                        int dummyByte = candidateVideoInputStream.read();
+                        if (dummyByte == -1) {
+                            throw new EOFException("Could not read dummy byte from video stream");
+                        }
+
+                        videoStream = candidateVideoStream;
+                        videoInputStream = candidateVideoInputStream;
                         openVideoError = null;
                         break;
                     } catch (IOException e) {
                         openVideoError = e;
-                        Thread.sleep(75);
+                        closeQuietly(candidateVideoInputStream);
+                        closeQuietly(candidateVideoStream);
+                        if (i < 39 && letServiceRunning.get()) {
+                            Thread.sleep(75);
+                        }
                     }
                 }
-                if (videoStream == null) {
+                if (videoInputStream == null) {
                     if (openVideoError != null) {
                         throw openVideoError;
                     }
                     throw new IOException("Failed to open scrcpy video stream");
-                }
-                videoInputStream = new DataInputStream(new AdbStreamInputStream(videoStream));
-                int dummyByte = videoInputStream.read();
-                if (dummyByte == -1) {
-                    throw new EOFException("Could not read dummy byte from video stream");
                 }
 
                 audioStream = openAdbStreamSerialized(adbConnection, socketService);
