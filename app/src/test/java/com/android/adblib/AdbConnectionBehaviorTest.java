@@ -194,6 +194,7 @@ public class AdbConnectionBehaviorTest {
 
             ExecutorService executor = Executors.newFixedThreadPool(1);
             try {
+                CountDownLatch assertionsDone = new CountDownLatch(1);
                 Future<?> serverFuture = executor.submit(() -> {
                     try (Socket peer = server.accept()) {
                         peer.setSoTimeout(3000);
@@ -209,6 +210,9 @@ public class AdbConnectionBehaviorTest {
                                 "device::test\0".getBytes(StandardCharsets.UTF_8),
                                 0
                         );
+
+                        // Keep the socket alive until client-side assertions complete.
+                        assertionsDone.await(5, TimeUnit.SECONDS);
                     }
                     return null;
                 });
@@ -217,8 +221,10 @@ public class AdbConnectionBehaviorTest {
                 try {
                     assertTrue(connection.connect(3, TimeUnit.SECONDS, false));
                     assertEquals(AdbProtocol.CONNECT_MAXDATA, connection.getMaxData());
+                    assertionsDone.countDown();
                     serverFuture.get(3, TimeUnit.SECONDS);
                 } finally {
+                    assertionsDone.countDown();
                     connection.close();
                 }
             } finally {

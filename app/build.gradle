@@ -3,6 +3,9 @@ evaluationDependsOn(':apkviewer')
 
 apply plugin: 'com.android.application'
 
+base {
+    archivesName = "scrcpy"
+}
 
 android {
     namespace = 'org.las2mile.scrcpy'
@@ -14,7 +17,6 @@ android {
         versionCode 5
         versionName "2.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
-        setProperty("archivesBaseName", "scrcpy")
     }
     buildTypes {
         release {

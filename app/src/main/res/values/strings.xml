@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">scrcpy-lite</string>
+    <string name="app_name" translatable="false">scrcpy-lite</string>
 
     <string name="help_wireless_debug">To use scrcpy-lite, enable wireless debugging on the remote device.\nADB: adb tcpip 5555\n\nIf in landscape, scroll down.</string>
 
@@ -12,7 +12,7 @@
     <string name="label_video_bitrate">Bitrate</string>
     <string name="label_video_bitrate_desc">Bitrate (affects quality and latency)</string>
 
-    <string name="label_x">x</string>
+    <string name="label_x" translatable="false">x</string>
     <string name="action_start">Start</string>
 
     <string name="status_connecting">Connecting...</string>
@@ -78,9 +78,9 @@
 
     <string name="launcher_search_hint">Search apps</string>
     <string name="launcher_icon_desc">App icon</string>
-    <string name="appswitch_button">=</string>
-    <string name="home_button">o</string>
-    <string name="back_button">v</string>
+    <string name="appswitch_button" translatable="false">=</string>
+    <string name="home_button" translatable="false">o</string>
+    <string name="back_button" translatable="false">v</string>
     <string name="switch1">Nav Bar  (check this if remote device does not have on-screen nav bar)</string>
     <string name="switch2">Amlogic Device Dedicated Mode</string>
 

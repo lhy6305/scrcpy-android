@@ -181,9 +181,6 @@ public final class AdbUtils {
     public static void executeDetachedShellCommand(AdbConnection adb, String command) throws IOException, InterruptedException {
         AdbStream stream = null;
         try {
-            synchronized (adb) {
-                stream = adb.open("shell:");
-            }
             String trimmed = command == null ? "" : command.trim();
             if (trimmed.endsWith(";")) {
                 trimmed = trimmed.substring(0, trimmed.length() - 1);

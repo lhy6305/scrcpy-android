@@ -1,5 +1,9 @@
 apply plugin: 'com.android.application'
 
+base {
+    archivesName = "apkviewer-agent"
+}
+
 android {
     namespace = 'org.las2mile.apkviewer'
     compileSdk 34
@@ -10,7 +14,6 @@ android {
         targetSdkVersion 34
         versionCode 1
         versionName "1"
-        setProperty("archivesBaseName", "apkviewer-agent")
     }
 
     buildTypes {
@@ -18,6 +21,12 @@ android {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
+    }
+
+    lint {
+        // apkviewer-agent runs under `app_process` and intentionally uses hidden APIs.
+        // Keep this intentional pattern as warning-level in reports instead of erroring builds.
+        disable 'SoonBlockedPrivateApi'
     }
 
 }

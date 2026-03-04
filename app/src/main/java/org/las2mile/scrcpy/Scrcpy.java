@@ -219,7 +219,7 @@ public class Scrcpy extends Service {
         int x = clamp((int) (touchEvent.getX() * remoteW / displayW), 0, remoteW - 1);
         int y = clamp((int) (touchEvent.getY() * remoteH / displayH), 0, remoteH - 1);
         int action = touchEvent.getActionMasked();
-        int actionButton = touchEvent.getActionButton();
+        int actionButton = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? touchEvent.getActionButton() : 0;
         int buttons = touchEvent.getButtonState();
         float pressure = touchEvent.getPressure();
 

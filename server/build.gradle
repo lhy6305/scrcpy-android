@@ -3,7 +3,7 @@ apply plugin: 'com.android.application'
 android {
     namespace = 'com.genymobile.scrcpy'
     compileSdk 34
-    ndkVersion "27.3.13750724"
+    ndkVersion = "27.3.13750724"
     defaultConfig {
         applicationId "com.genymobile.scrcpy"
         minSdkVersion 21
@@ -36,7 +36,8 @@ android {
         aidl = true
     }
     lint {
-        disable 'UseRequiresApi'
+        // local.properties is machine-generated and may use Windows escaping that lint flags.
+        disable 'UseRequiresApi', 'PropertyEscape'
     }
 
     task copyRelease(type: Copy){

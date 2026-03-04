@@ -28,6 +28,8 @@ app/src/main/assets/*.jar
 *.iws
 out/
 .kotlin/
+tools/.classes/
+tools/out/
 
 # Signing files
 *.jks
