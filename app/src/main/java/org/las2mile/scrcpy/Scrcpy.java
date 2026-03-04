@@ -121,6 +121,7 @@ public class Scrcpy extends Service {
     private final int[] remoteDevResolution = new int[2];
     private volatile boolean socketStatus = false;
     private final AtomicBoolean connectionReported = new AtomicBoolean(false);
+    private final AtomicLong connectionGeneration = new AtomicLong(0);
     private final LinkedBlockingDeque<byte[]> controlQueue = new LinkedBlockingDeque<>(256);
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicReference<String> lastRemoteClipboardText = new AtomicReference<>();
@@ -161,6 +162,14 @@ public class Scrcpy extends Service {
     }
 
     public void start(Surface surface, String serverAdr, int screenHeight, int screenWidth, int videoBitrate, boolean useAmlogicMode, int scid) {
+        long generation = connectionGeneration.incrementAndGet();
+        Thread previousConnectionThread = connectionThread;
+        if (previousConnectionThread != null && previousConnectionThread.isAlive()) {
+            previousConnectionThread.interrupt();
+        }
+        closeQuietly(adbConnectionForTools);
+        adbConnectionForTools = null;
+
         letServiceRunning.set(true);
         if (clipboardSyncEnabled) {
             registerClipboardSync();
@@ -177,7 +186,7 @@ public class Scrcpy extends Service {
         this.videoBitrate = videoBitrate;
         this.useAmlogicMode = useAmlogicMode;
         this.surface = surface;
-        connectionThread = new Thread(this::startConnection, "scrcpy-connection");
+        connectionThread = new Thread(() -> startConnection(generation), "scrcpy-connection-" + generation);
         connectionThread.start();
     }
 
@@ -195,13 +204,16 @@ public class Scrcpy extends Service {
     }
 
     public void StopService() {
+        connectionGeneration.incrementAndGet();
         letServiceRunning.set(false);
         unregisterClipboardSync();
         // Force-close to unblock reads quickly and free the TCP slot for reconnect.
         closeQuietly(adbConnectionForTools);
         adbConnectionForTools = null;
-        if (connectionThread != null) {
-            connectionThread.interrupt();
+        Thread thread = connectionThread;
+        connectionThread = null;
+        if (thread != null) {
+            thread.interrupt();
         }
         notifyConnectionStateChanged(false);
         stopVideoDecoder();
@@ -351,9 +363,17 @@ public class Scrcpy extends Service {
                 && (msg[1] & 0xFF) == MotionEvent.ACTION_MOVE;
     }
 
-    private void startConnection() {
+    private boolean isCurrentConnectionGeneration(long generation) {
+        return generation == connectionGeneration.get();
+    }
+
+    private boolean isConnectionLoopActive(long generation) {
+        return letServiceRunning.get() && isCurrentConnectionGeneration(generation);
+    }
+
+    private void startConnection(long generation) {
         int attempts = 50;
-        while (attempts != 0 && letServiceRunning.get()) {
+        while (attempts != 0 && isConnectionLoopActive(generation)) {
             AdbConnection adbConnection = null;
             AdbStream videoStream = null;
             AdbStream audioStream = null;
@@ -367,6 +387,9 @@ public class Scrcpy extends Service {
             Thread audioReceiver = null;
             try {
                 adbConnection = openAdbConnection(serverAdr);
+                if (!isConnectionLoopActive(generation)) {
+                    break;
+                }
                 adbConnectionForTools = adbConnection;
                 String socketService = "localabstract:" + getSocketName(scid);
 
@@ -374,7 +397,7 @@ public class Scrcpy extends Service {
                 String serverCommand = SendCommands.buildServerCommand(videoBitrate, maxSize, screenWidth, screenHeight, useAmlogicMode, scid);
                 org.las2mile.scrcpy.utils.AdbUtils.executeDetachedShellCommand(adbConnection, serverCommand);
 
-                StreamOpenResult streams = openStreamsWithRetry(adbConnection, socketService);
+                StreamOpenResult streams = openStreamsWithRetry(adbConnection, socketService, generation);
                 videoStream = streams.videoStream;
                 audioStream = streams.audioStream;
                 controlStream = streams.controlStream;
@@ -383,10 +406,16 @@ public class Scrcpy extends Service {
                 controlInputStream = streams.controlInputStream;
                 controlOutputStream = streams.controlOutputStream;
 
+                if (!isConnectionLoopActive(generation)) {
+                    break;
+                }
                 controlSender = startControlSender(controlOutputStream);
                 controlReceiver = startControlReceiver(controlInputStream);
                 audioReceiver = startAudioReceiver(audioInputStream);
 
+                if (!isConnectionLoopActive(generation)) {
+                    break;
+                }
                 attempts = 0;
                 socketStatus = true;
                 notifyConnectionStateChanged(true);
@@ -404,6 +433,9 @@ public class Scrcpy extends Service {
                 ensureVideoDecoder();
                 streamWidth = videoInputStream.readInt();
                 streamHeight = videoInputStream.readInt();
+                if (!isConnectionLoopActive(generation)) {
+                    break;
+                }
                 notifyVideoSizeChanged(streamWidth, streamHeight);
                 Log.i("scrcpy", "Video codec: 0x" + Integer.toHexString(codec) + " (" + videoMimeType + "), size: "
                         + streamWidth + "x" + streamHeight);
@@ -412,7 +444,7 @@ public class Scrcpy extends Service {
                 boolean decoderConfigured = false;
                 byte[] codecConfigPacket = null;
                 byte[] pendingMergeConfigPacket = null;
-                while (letServiceRunning.get()) {
+                while (isConnectionLoopActive(generation)) {
                     long ptsFlags = videoInputStream.readLong();
                     int packetSize = videoInputStream.readInt();
                     if (packetSize <= 0) {
@@ -486,6 +518,9 @@ public class Scrcpy extends Service {
                     }
                 }
             } catch (EOFException e) {
+                if (!isCurrentConnectionGeneration(generation)) {
+                    break;
+                }
                 Log.i("scrcpy", "Connection closed");
                 notifyConnectionStateChanged(false);
                 if (attempts == 0) {
@@ -498,6 +533,9 @@ public class Scrcpy extends Service {
                 }
                 sleepBeforeRetry();
             } catch (IOException e) {
+                if (!isCurrentConnectionGeneration(generation)) {
+                    break;
+                }
                 if (attempts == 0) {
                     notifyConnectionError(e.getMessage());
                     notifyConnectionStateChanged(false);
@@ -512,6 +550,9 @@ public class Scrcpy extends Service {
                 }
                 sleepBeforeRetry();
             } catch (RuntimeException e) {
+                if (!isCurrentConnectionGeneration(generation)) {
+                    break;
+                }
                 Log.e("scrcpy", "Connection loop runtime error", e);
                 String error = e.getClass().getSimpleName();
                 String detail = e.getMessage();
@@ -533,7 +574,9 @@ public class Scrcpy extends Service {
                 sleepBeforeRetry();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                notifyConnectionStateChanged(false);
+                if (isCurrentConnectionGeneration(generation)) {
+                    notifyConnectionStateChanged(false);
+                }
                 break;
             } finally {
                 if (adbConnectionForTools == adbConnection) {
@@ -555,8 +598,13 @@ public class Scrcpy extends Service {
                 joinThread(audioReceiver);
             }
         }
-        socketStatus = false;
-        notifyConnectionStateChanged(false);
+        if (connectionThread == Thread.currentThread()) {
+            connectionThread = null;
+        }
+        if (isCurrentConnectionGeneration(generation)) {
+            socketStatus = false;
+            notifyConnectionStateChanged(false);
+        }
     }
 
     private AdbConnection openAdbConnection(String host) throws IOException, InterruptedException {
@@ -611,10 +659,10 @@ public class Scrcpy extends Service {
         return SOCKET_NAME_PREFIX + String.format("_%08x", scid);
     }
 
-    private StreamOpenResult openStreamsWithRetry(AdbConnection adbConnection, String socketService)
+    private StreamOpenResult openStreamsWithRetry(AdbConnection adbConnection, String socketService, long generation)
             throws IOException, InterruptedException {
         IOException lastError = null;
-        for (int i = 0; i < STREAM_OPEN_MAX_RETRIES && letServiceRunning.get(); i++) {
+        for (int i = 0; i < STREAM_OPEN_MAX_RETRIES && isConnectionLoopActive(generation); i++) {
             AdbStream candidateVideoStream = null;
             AdbStream candidateAudioStream = null;
             AdbStream candidateControlStream = null;
@@ -656,12 +704,15 @@ public class Scrcpy extends Service {
                 closeQuietly(candidateControlStream);
                 closeQuietly(candidateAudioStream);
                 closeQuietly(candidateVideoStream);
-                if (i < STREAM_OPEN_MAX_RETRIES - 1 && letServiceRunning.get()) {
+                if (i < STREAM_OPEN_MAX_RETRIES - 1 && isConnectionLoopActive(generation)) {
                     Thread.sleep(STREAM_OPEN_RETRY_DELAY_MS);
                 }
             }
         }
 
+        if (!isConnectionLoopActive(generation)) {
+            throw new InterruptedException("Connection stopped");
+        }
         if (lastError != null) {
             throw lastError;
         }
@@ -1665,10 +1716,15 @@ public class Scrcpy extends Service {
 
     @Override
     public void onDestroy() {
+        connectionGeneration.incrementAndGet();
         letServiceRunning.set(false);
         unregisterClipboardSync();
-        if (connectionThread != null) {
-            connectionThread.interrupt();
+        closeQuietly(adbConnectionForTools);
+        adbConnectionForTools = null;
+        Thread thread = connectionThread;
+        connectionThread = null;
+        if (thread != null) {
+            thread.interrupt();
         }
         stopVideoDecoder();
         super.onDestroy();
