@@ -38,7 +38,7 @@ public class AdbStream implements Closeable {
         if (isClosed || remoteId == 0) {
             return;
         }
-        byte[] packet = AdbProtocol.generateReady(localId, remoteId);
+        byte[] packet = adbConn.generateReadyPacket(localId, remoteId);
         synchronized (adbConn.outputStream) {
             adbConn.outputStream.write(packet);
             adbConn.outputStream.flush();
@@ -131,7 +131,7 @@ public class AdbStream implements Closeable {
                 chunk = Arrays.copyOfRange(source, offset, offset + chunkSize);
             }
 
-            byte[] packet = AdbProtocol.generateWrite(localId, remoteId, chunk);
+            byte[] packet = adbConn.generateWritePacket(localId, remoteId, chunk);
             synchronized (adbConn.outputStream) {
                 adbConn.outputStream.write(packet);
                 if (flush && (source.length == 0 || offset + chunkSize >= source.length)) {
@@ -169,7 +169,7 @@ public class AdbStream implements Closeable {
             return;
         }
 
-        byte[] packet = AdbProtocol.generateClose(localId, remoteId);
+        byte[] packet = adbConn.generateClosePacket(localId, remoteId);
         synchronized (adbConn.outputStream) {
             adbConn.outputStream.write(packet);
             adbConn.outputStream.flush();

@@ -18,7 +18,7 @@ public class AdbProtocol {
     public static final int CONNECT_VERSION_SKIP_CHECKSUM = 0x01000001;
     public static final int CONNECT_VERSION = 0x01000001;
     public static final int CONNECT_MAXDATA = MAX_PAYLOAD;
-    public static final byte[] CONNECT_PAYLOAD = "host::\0".getBytes(StandardCharsets.UTF_8);
+    public static final byte[] CONNECT_PAYLOAD = "host::features=shell_v2,cmd,stat_v2".getBytes(StandardCharsets.UTF_8);
 
     public static final int CMD_AUTH = 0x48545541;
     public static final int AUTH_TYPE_TOKEN = 1;
@@ -52,7 +52,7 @@ public class AdbProtocol {
         return validateMessage(msg, MAX_PAYLOAD);
     }
 
-    public static byte[] generateMessage(int command, int arg0, int arg1, byte[] payload) {
+    public static byte[] generateMessage(int command, int arg0, int arg1, byte[] payload, boolean skipChecksum) {
         ByteBuffer buffer;
         if (payload != null) {
             buffer = ByteBuffer.allocate(ADB_HEADER_LENGTH + payload.length).order(ByteOrder.LITTLE_ENDIAN);
@@ -65,7 +65,7 @@ public class AdbProtocol {
         buffer.putInt(arg1);
         if (payload != null) {
             buffer.putInt(payload.length);
-            buffer.putInt(getPayloadChecksum(payload));
+            buffer.putInt(skipChecksum ? 0 : getPayloadChecksum(payload));
         } else {
             buffer.putInt(0);
             buffer.putInt(0);
@@ -77,32 +77,60 @@ public class AdbProtocol {
         return buffer.array();
     }
 
+    public static byte[] generateMessage(int command, int arg0, int arg1, byte[] payload) {
+        return generateMessage(command, arg0, arg1, payload, false);
+    }
+
+    public static byte[] generateConnect(boolean skipChecksum) {
+        return generateMessage(CMD_CNXN, CONNECT_VERSION, CONNECT_MAXDATA, CONNECT_PAYLOAD, skipChecksum);
+    }
+
     public static byte[] generateConnect() {
-        return generateMessage(CMD_CNXN, CONNECT_VERSION, CONNECT_MAXDATA, CONNECT_PAYLOAD);
+        return generateConnect(false);
+    }
+
+    public static byte[] generateAuth(int authType, byte[] data, boolean skipChecksum) {
+        return generateMessage(CMD_AUTH, authType, 0, data, skipChecksum);
     }
 
     public static byte[] generateAuth(int authType, byte[] data) {
-        return generateMessage(CMD_AUTH, authType, 0, data);
+        return generateAuth(authType, data, false);
     }
 
-    public static byte[] generateOpen(int localId, String destination) {
+    public static byte[] generateOpen(int localId, String destination, boolean skipChecksum) {
         byte[] destinationBytes = destination.getBytes(StandardCharsets.UTF_8);
         ByteBuffer buffer = ByteBuffer.allocate(destinationBytes.length + 1);
         buffer.put(destinationBytes);
         buffer.put((byte) 0);
-        return generateMessage(CMD_OPEN, localId, 0, buffer.array());
+        return generateMessage(CMD_OPEN, localId, 0, buffer.array(), skipChecksum);
+    }
+
+    public static byte[] generateOpen(int localId, String destination) {
+        return generateOpen(localId, destination, false);
+    }
+
+    public static byte[] generateWrite(int localId, int remoteId, byte[] data, boolean skipChecksum) {
+        return generateMessage(CMD_WRTE, localId, remoteId, data, skipChecksum);
     }
 
     public static byte[] generateWrite(int localId, int remoteId, byte[] data) {
-        return generateMessage(CMD_WRTE, localId, remoteId, data);
+        return generateWrite(localId, remoteId, data, false);
+    }
+
+    public static byte[] generateClose(int localId, int remoteId, boolean skipChecksum) {
+        return generateMessage(CMD_CLSE, localId, remoteId, null, skipChecksum);
     }
 
     public static byte[] generateClose(int localId, int remoteId) {
-        return generateMessage(CMD_CLSE, localId, remoteId, null);
+        return generateClose(localId, remoteId, false);
+    }
+
+    public static byte[] generateReady(int localId, int remoteId, boolean skipChecksum) {
+        return generateMessage(CMD_OKAY, localId, remoteId, null, skipChecksum);
     }
 
     public static byte[] generateReady(int localId, int remoteId) {
-        return generateMessage(CMD_OKAY, localId, remoteId, null);
+        return generateReady(localId, remoteId, false);
     }
 
     static final class AdbMessage {

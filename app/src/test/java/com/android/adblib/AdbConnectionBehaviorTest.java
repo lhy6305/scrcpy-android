@@ -171,6 +171,126 @@ public class AdbConnectionBehaviorTest {
         }
     }
 
+    @Test
+    public void openPacketChecksum_zeroWhenPeerNegotiatesSkipChecksum() throws Exception {
+        AdbProtocol.AdbMessage openPacket =
+                connectAndCaptureOpenPacket(AdbProtocol.CONNECT_VERSION, 1024, 0);
+        assertEquals(0, openPacket.checksum);
+    }
+
+    @Test
+    public void openPacketChecksum_computedForLegacyProtocolVersion() throws Exception {
+        AdbProtocol.AdbMessage openPacket =
+                connectAndCaptureOpenPacket(AdbProtocol.CONNECT_VERSION_MIN, 1024, null);
+        assertEquals(payloadChecksum(openPacket.payload), openPacket.checksum);
+    }
+
+    @Test
+    public void connectNegotiatesUnsignedMaxDataLikeAospTransport() throws Exception {
+        try (ServerSocket server = new ServerSocket(0);
+             Socket client = new Socket()) {
+            client.connect(new InetSocketAddress("127.0.0.1", server.getLocalPort()), 3000);
+            client.setSoTimeout(3000);
+
+            ExecutorService executor = Executors.newFixedThreadPool(1);
+            try {
+                Future<?> serverFuture = executor.submit(() -> {
+                    try (Socket peer = server.accept()) {
+                        peer.setSoTimeout(3000);
+                        AdbProtocol.AdbMessage connectPacket =
+                                AdbProtocol.AdbMessage.parseAdbMessage(peer.getInputStream(), AdbProtocol.MAX_PAYLOAD);
+                        assertEquals(AdbProtocol.CMD_CNXN, connectPacket.command);
+
+                        writePacket(
+                                peer.getOutputStream(),
+                                AdbProtocol.CMD_CNXN,
+                                AdbProtocol.CONNECT_VERSION,
+                                -1,
+                                "device::test\0".getBytes(StandardCharsets.UTF_8),
+                                0
+                        );
+                    }
+                    return null;
+                });
+
+                AdbConnection connection = AdbConnection.create(client, null);
+                try {
+                    assertTrue(connection.connect(3, TimeUnit.SECONDS, false));
+                    assertEquals(AdbProtocol.CONNECT_MAXDATA, connection.getMaxData());
+                    serverFuture.get(3, TimeUnit.SECONDS);
+                } finally {
+                    connection.close();
+                }
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+    }
+
+    private static AdbProtocol.AdbMessage connectAndCaptureOpenPacket(int peerVersion, int peerMaxData,
+                                                                       Integer peerConnectChecksumOverride)
+            throws Exception {
+        try (ServerSocket server = new ServerSocket(0);
+             Socket client = new Socket()) {
+            client.connect(new InetSocketAddress("127.0.0.1", server.getLocalPort()), 3000);
+            client.setSoTimeout(3000);
+
+            ExecutorService executor = Executors.newFixedThreadPool(1);
+            try {
+                Future<AdbProtocol.AdbMessage> serverFuture = executor.submit(() -> {
+                    try (Socket peer = server.accept()) {
+                        peer.setSoTimeout(3000);
+                        AdbProtocol.AdbMessage connectPacket =
+                                AdbProtocol.AdbMessage.parseAdbMessage(peer.getInputStream(), AdbProtocol.MAX_PAYLOAD);
+                        assertEquals(AdbProtocol.CMD_CNXN, connectPacket.command);
+
+                        writePacket(
+                                peer.getOutputStream(),
+                                AdbProtocol.CMD_CNXN,
+                                peerVersion,
+                                peerMaxData,
+                                "device::test\0".getBytes(StandardCharsets.UTF_8),
+                                peerConnectChecksumOverride
+                        );
+
+                        AdbProtocol.AdbMessage openPacket =
+                                AdbProtocol.AdbMessage.parseAdbMessage(peer.getInputStream(), AdbProtocol.MAX_PAYLOAD);
+                        assertEquals(AdbProtocol.CMD_OPEN, openPacket.command);
+
+                        writePacket(peer.getOutputStream(), AdbProtocol.CMD_CLSE, 0, openPacket.arg0, null, 0);
+                        return openPacket;
+                    }
+                });
+
+                AdbConnection connection = AdbConnection.create(client, null);
+                try {
+                    assertTrue(connection.connect(3, TimeUnit.SECONDS, false));
+
+                    try {
+                        connection.open("shell:id");
+                        fail("Expected ConnectException");
+                    } catch (ConnectException expected) {
+                        // Expected rejection from peer.
+                    }
+
+                    return serverFuture.get(5, TimeUnit.SECONDS);
+                } finally {
+                    connection.close();
+                }
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+    }
+
+    private static int payloadChecksum(byte[] payload) {
+        int checksum = 0;
+        for (byte b : payload) {
+            checksum += b >= 0 ? b : b + 256;
+        }
+        return checksum;
+    }
+
     private static void writePacket(OutputStream out, int command, int arg0, int arg1,
                                     byte[] payload, Integer checksumOverride) throws IOException {
         byte[] packet = AdbProtocol.generateMessage(command, arg0, arg1, payload);

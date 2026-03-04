@@ -20,6 +20,7 @@ public class AdbConnection implements Closeable {
     private volatile boolean authorisationFailed;
     private volatile boolean connected;
     private volatile int maxData;
+    private volatile int protocolVersion;
     private volatile AdbCrypto crypto;
     private boolean sentSignature;
     private volatile ConcurrentHashMap<Integer, AdbStream> openStreams;
@@ -28,6 +29,7 @@ public class AdbConnection implements Closeable {
         openStreams = new ConcurrentHashMap<>();
         lastLocalId = 0;
         maxData = AdbProtocol.CONNECT_MAXDATA;
+        protocolVersion = AdbProtocol.CONNECT_VERSION_MIN;
         connectionThread = createConnectionThread();
     }
 
@@ -165,12 +167,14 @@ public class AdbConnection implements Closeable {
             }
             authReply = AdbProtocol.generateAuth(
                     AdbProtocol.AUTH_TYPE_RSA_PUBLIC,
-                    crypto.getAdbPublicKeyPayload()
+                    crypto.getAdbPublicKeyPayload(),
+                    shouldSkipChecksum()
             );
         } else {
             authReply = AdbProtocol.generateAuth(
                     AdbProtocol.AUTH_TYPE_SIGNATURE,
-                    crypto.signAdbTokenPayload(msg.payload)
+                    crypto.signAdbTokenPayload(msg.payload),
+                    shouldSkipChecksum()
             );
             sentSignature = true;
         }
@@ -181,13 +185,18 @@ public class AdbConnection implements Closeable {
         }
     }
 
-    private void handleConnect(AdbProtocol.AdbMessage msg) throws IOException {
-        int negotiatedMaxData = Math.min(msg.arg1, AdbProtocol.CONNECT_MAXDATA);
-        if (negotiatedMaxData <= 0) {
-            throw new IOException("Invalid CNXN maxdata: " + msg.arg1);
-        }
+    private void handleConnect(AdbProtocol.AdbMessage msg) {
+        int negotiatedVersion = (int) Math.min(
+                Integer.toUnsignedLong(msg.arg0),
+                Integer.toUnsignedLong(AdbProtocol.CONNECT_VERSION)
+        );
+        int negotiatedMaxData = (int) Math.min(
+                Integer.toUnsignedLong(msg.arg1),
+                Integer.toUnsignedLong(AdbProtocol.CONNECT_MAXDATA)
+        );
 
         synchronized (this) {
+            protocolVersion = negotiatedVersion;
             maxData = negotiatedMaxData;
             connected = true;
             notifyAll();
@@ -195,16 +204,42 @@ public class AdbConnection implements Closeable {
     }
 
     private int getIncomingMaxPayload() {
-        int current = maxData;
-        if (!connected || current <= 0) {
+        if (!connected) {
             return AdbProtocol.CONNECT_MAXDATA;
         }
-        return current;
+        return Math.max(0, maxData);
     }
 
     int getMaxDataValue() {
-        int value = maxData;
-        return value > 0 ? value : AdbProtocol.CONNECT_MAXDATA;
+        if (!connected) {
+            return AdbProtocol.CONNECT_MAXDATA;
+        }
+        return Math.max(0, maxData);
+    }
+
+    private boolean shouldSkipChecksum() {
+        return Integer.toUnsignedLong(protocolVersion)
+                >= Integer.toUnsignedLong(AdbProtocol.CONNECT_VERSION_SKIP_CHECKSUM);
+    }
+
+    private byte[] generateConnectPacket() {
+        return AdbProtocol.generateConnect(shouldSkipChecksum());
+    }
+
+    byte[] generateOpenPacket(int localId, String destination) {
+        return AdbProtocol.generateOpen(localId, destination, shouldSkipChecksum());
+    }
+
+    byte[] generateWritePacket(int localId, int remoteId, byte[] data) {
+        return AdbProtocol.generateWrite(localId, remoteId, data, shouldSkipChecksum());
+    }
+
+    byte[] generateClosePacket(int localId, int remoteId) {
+        return AdbProtocol.generateClose(localId, remoteId, shouldSkipChecksum());
+    }
+
+    byte[] generateReadyPacket(int localId, int remoteId) {
+        return AdbProtocol.generateReady(localId, remoteId, shouldSkipChecksum());
     }
 
     void unregisterStream(int localId, AdbStream stream) {
@@ -215,7 +250,7 @@ public class AdbConnection implements Closeable {
         if (remoteId == 0) {
             return;
         }
-        byte[] packet = AdbProtocol.generateClose(localId, remoteId);
+        byte[] packet = generateClosePacket(localId, remoteId);
         synchronized (outputStream) {
             outputStream.write(packet);
             outputStream.flush();
@@ -241,7 +276,7 @@ public class AdbConnection implements Closeable {
         }
 
         synchronized (outputStream) {
-            outputStream.write(AdbProtocol.generateConnect());
+            outputStream.write(generateConnectPacket());
             outputStream.flush();
         }
 
@@ -250,6 +285,7 @@ public class AdbConnection implements Closeable {
         authorisationFailed = false;
         sentSignature = false;
         maxData = AdbProtocol.CONNECT_MAXDATA;
+        protocolVersion = AdbProtocol.CONNECT_VERSION_MIN;
         connectionThread.start();
         return waitForConnection(timeout, unit);
     }
@@ -265,7 +301,7 @@ public class AdbConnection implements Closeable {
         openStreams.put(localId, stream);
         try {
             synchronized (outputStream) {
-                outputStream.write(AdbProtocol.generateOpen(localId, destination));
+                outputStream.write(generateOpenPacket(localId, destination));
                 outputStream.flush();
             }
         } catch (IOException e) {
