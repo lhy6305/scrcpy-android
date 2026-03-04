@@ -67,31 +67,29 @@ public class SendCommands {
     private static final int SOCKET_TIMEOUT_MS = 5_000;
     private static final long PROMPT_TIMEOUT_MS = 10_000L;
     private static final String REMOTE_SERVER_JAR_PATH = "/data/local/tmp/scrcpy-server.jar";
+    private static final int AML_V4L2_DEFAULT_REQBUFS = 4;
+    private static final int AML_V4L2_DEFAULT_FPS = 30;
 
     static String buildServerCommand(int bitrate, int maxSize, int width, int height, boolean useAmlogicMode, int scid) {
         final StringBuilder command = new StringBuilder();
         command.append("CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server 3.3.4");
-        command.append(" log_level=info");
         command.append(String.format(Locale.US, " scid=%08x", scid & 0x7fffffff));
-        command.append(" video=true");
-        command.append(" video_source=display");
-        command.append(" max_fps=30");
-        command.append(" audio=true");
-        command.append(" video_codec_options=repeat-previous-frame-after:long=0");
-        command.append(" video_bit_rate=").append(bitrate);
-        command.append(" control=true");
+        command.append(" log_level=info");
+        if (bitrate > 0) {
+            command.append(" video_bit_rate=").append(bitrate);
+        }
+        if (maxSize > 0) {
+            command.append(" max_size=").append(maxSize);
+        }
         command.append(" tunnel_forward=true");
-        command.append(" max_size=").append(maxSize);
-        // Keep server jar on device so stream-only reconnect can restart without re-push.
-        command.append(" cleanup=false");
         if (useAmlogicMode) {
             command.append(" amlogic_v4l2=true");
             command.append(" amlogic_v4l2_instance=1");
             command.append(" amlogic_v4l2_source_type=1");
             command.append(" amlogic_v4l2_width=").append(width);
             command.append(" amlogic_v4l2_height=").append(height);
-            command.append(" amlogic_v4l2_fps=30");
-            command.append(" amlogic_v4l2_reqbufs=4");
+            command.append(" amlogic_v4l2_fps=").append(AML_V4L2_DEFAULT_FPS);
+            command.append(" amlogic_v4l2_reqbufs=").append(AML_V4L2_DEFAULT_REQBUFS);
             command.append(" amlogic_v4l2_format=nv21");
         }
         return command.toString();
@@ -228,8 +226,6 @@ public class SendCommands {
             Log.i("scrcpy", "ADB socket connection successful");
             
             report(listener, Phase.OPENING_SHELL);
-            // Kill existing server before pushing or starting
-            AdbUtils.executeShellCommandWait(session.adb, "pkill -f com.genymobile.scrcpy.Server", PROMPT_TIMEOUT_MS);
 
             if (fileBytes != null && fileBytes.length > 0) {
                 report(listener, Phase.PUSHING_JAR);
@@ -256,8 +252,6 @@ public class SendCommands {
             Log.i("scrcpy", "ADB socket connection successful");
 
             report(listener, Phase.OPENING_SHELL);
-            // Kill existing server
-            AdbUtils.executeShellCommandWait(session.adb, "pkill -f com.genymobile.scrcpy.Server", PROMPT_TIMEOUT_MS);
 
             if (command != null && !command.trim().isEmpty()) {
                 report(listener, Phase.STARTING_SERVER);

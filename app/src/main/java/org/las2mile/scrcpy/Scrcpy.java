@@ -78,8 +78,8 @@ public class Scrcpy extends Service {
     private static final int ADB_PORT = 5555;
     private static final int ADB_CONNECT_TIMEOUT_MS = 5_000;
     private static final int ADB_SOCKET_TIMEOUT_MS = 5_000;
-    private static final int STREAM_OPEN_MAX_RETRIES = 120;
-    private static final long STREAM_OPEN_RETRY_DELAY_MS = 120L;
+    private static final int STREAM_OPEN_MAX_RETRIES = 100;
+    private static final long STREAM_OPEN_RETRY_DELAY_MS = 100L;
 
     private static final int VIDEO_CODEC_H264 = 0x68_32_36_34;
     private static final int VIDEO_CODEC_H265 = 0x68_32_36_35;
@@ -366,9 +366,6 @@ public class Scrcpy extends Service {
                 adbConnection = openAdbConnection(serverAdr);
                 adbConnectionForTools = adbConnection;
                 String socketService = "localabstract:" + getSocketName(scid);
-
-                // Kill any existing server first
-                org.las2mile.scrcpy.utils.AdbUtils.executeShellCommandWait(adbConnection, "pkill -f com.genymobile.scrcpy.Server", 5000);
 
                 int maxSize = Math.max(screenHeight, screenWidth);
                 String serverCommand = SendCommands.buildServerCommand(videoBitrate, maxSize, screenWidth, screenHeight, useAmlogicMode, scid);

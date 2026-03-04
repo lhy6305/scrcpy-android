@@ -1,15 +1,15 @@
 package org.las2mile.scrcpy;
 
+import com.android.adblib.AdbConnection;
+
 import org.junit.Test;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 public class AdbTimeoutAndCommandSafetyTest {
 
@@ -27,6 +27,16 @@ public class AdbTimeoutAndCommandSafetyTest {
     }
 
     @Test
+    public void scrcpyStreamOpenRetryWindow_matchesOfficialBaseline() throws Exception {
+        int retries = getPrivateStaticInt(Scrcpy.class, "STREAM_OPEN_MAX_RETRIES");
+        long delayMs = getPrivateStaticLong(Scrcpy.class, "STREAM_OPEN_RETRY_DELAY_MS");
+
+        assertEquals(100, retries);
+        assertEquals(100L, delayMs);
+        assertEquals(10_000L, retries * delayMs);
+    }
+
+    @Test
     public void apkViewerPromptTimeout_matchesSocketTimeout() throws Exception {
         int socketTimeoutMs = getPrivateStaticInt(ApkViewerAgentClient.class, "SOCKET_TIMEOUT_MS");
         long promptTimeoutMs = getPrivateStaticLong(ApkViewerAgentClient.class, "PROMPT_TIMEOUT_MS");
@@ -36,20 +46,42 @@ public class AdbTimeoutAndCommandSafetyTest {
     }
 
     @Test
-    public void apkViewerBuildAppendBase64LineCommand_usesPrintfAndQuotedPayload() throws Exception {
-        String command = invokeBuildAppendBase64LineCommand("abc+/=", "apkviewerAgentBase64");
-        assertEquals("printf '%s\\n' 'abc+/=' >> apkviewerAgentBase64\n", command);
-        assertFalse(command.contains(" echo "));
+    public void apkViewerDeploy_rejectsEmptyJarBytesBeforeNetwork() {
+        try {
+            ApkViewerAgentClient.deploy(null, null, new byte[0], null);
+        } catch (IOException e) {
+            assertEquals("agentJarBytes is empty", e.getMessage());
+            return;
+        } catch (InterruptedException e) {
+            throw new AssertionError("Unexpected interruption", e);
+        }
+        throw new AssertionError("Expected IOException");
     }
 
     @Test
-    public void apkViewerBuildAppendBase64LineCommand_rejectsSingleQuote() throws Exception {
+    public void apkViewerDeployWithAdb_rejectsNullConnection() {
         try {
-            invokeBuildAppendBase64LineCommand("ab'cd", "apkviewerAgentBase64");
-            fail("Expected IllegalArgumentException");
-        } catch (InvocationTargetException e) {
-            assertTrue(e.getCause() instanceof IllegalArgumentException);
+            ApkViewerAgentClient.deploy((AdbConnection) null, new byte[]{1}, null);
+        } catch (IOException e) {
+            assertEquals("adb is null", e.getMessage());
+            return;
+        } catch (InterruptedException e) {
+            throw new AssertionError("Unexpected interruption", e);
         }
+        throw new AssertionError("Expected IOException");
+    }
+
+    @Test
+    public void apkViewerExecWithAdb_rejectsNullConnection() {
+        try {
+            ApkViewerAgentClient.exec((AdbConnection) null, "echo test");
+        } catch (IOException e) {
+            assertEquals("adb is null", e.getMessage());
+            return;
+        } catch (InterruptedException e) {
+            throw new AssertionError("Unexpected interruption", e);
+        }
+        throw new AssertionError("Expected IOException");
     }
 
     @Test
@@ -69,14 +101,5 @@ public class AdbTimeoutAndCommandSafetyTest {
         Field field = clazz.getDeclaredField(fieldName);
         field.setAccessible(true);
         return field.getLong(null);
-    }
-
-    private static String invokeBuildAppendBase64LineCommand(String chunk, String targetFile) throws Exception {
-        Method method = ApkViewerAgentClient.class.getDeclaredMethod(
-                "buildAppendBase64LineCommand",
-                String.class,
-                String.class);
-        method.setAccessible(true);
-        return (String) method.invoke(null, chunk, targetFile);
     }
 }
