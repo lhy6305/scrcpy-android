@@ -102,6 +102,9 @@ public class Scrcpy extends Service {
     private static final int AUDIO_CHANNELS = 2;
     private static final int AUDIO_ENCODING = AudioFormat.ENCODING_PCM_16BIT;
     private static final int MJPEG_PACKET_HEADER_BYTES = 8;
+    private static final int MAX_VIDEO_PACKET_SIZE = 8 * 1024 * 1024;
+    private static final int MAX_AUDIO_PACKET_SIZE = 1 * 1024 * 1024;
+    private static final int MAX_MJPEG_PACKET_SIZE = 16 * 1024 * 1024;
 
     private String serverAdr;
     private int scid = -1;
@@ -415,6 +418,7 @@ public class Scrcpy extends Service {
                     if (packetSize <= 0) {
                         continue;
                     }
+                    validatePacketSize(packetSize, MAX_VIDEO_PACKET_SIZE, "video");
 
                     byte[] packet = new byte[packetSize];
                     videoInputStream.readFully(packet);
@@ -455,19 +459,31 @@ public class Scrcpy extends Service {
 
                     if (config) {
                         if (!mustMergeConfigPacket) {
-                            videoDecoder.decodeSample(packet, 0, packet.length, pts, MediaCodec.BUFFER_FLAG_CODEC_CONFIG);
+                            try {
+                                videoDecoder.decodeSample(packet, 0, packet.length, pts, MediaCodec.BUFFER_FLAG_CODEC_CONFIG);
+                            } catch (RuntimeException e) {
+                                decoderConfigured = false;
+                                pendingMergeConfigPacket = codecConfigPacket;
+                                Log.w("scrcpy", "Failed to decode codec config packet", e);
+                            }
                         }
                         continue;
                     }
 
                     byte[] packetToDecode = packet;
                     if (mustMergeConfigPacket && pendingMergeConfigPacket != null) {
-                        packetToDecode = mergeConfigPacket(pendingMergeConfigPacket, packet);
+                        packetToDecode = mergeConfigPacket(pendingMergeConfigPacket, packet, MAX_VIDEO_PACKET_SIZE);
                         pendingMergeConfigPacket = null;
                     }
 
                     int flags = keyFrame ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
-                    videoDecoder.decodeSample(packetToDecode, 0, packetToDecode.length, pts, flags);
+                    try {
+                        videoDecoder.decodeSample(packetToDecode, 0, packetToDecode.length, pts, flags);
+                    } catch (RuntimeException e) {
+                        decoderConfigured = false;
+                        pendingMergeConfigPacket = codecConfigPacket;
+                        Log.w("scrcpy", "Failed to decode video packet", e);
+                    }
                 }
             } catch (EOFException e) {
                 Log.i("scrcpy", "Connection closed");
@@ -490,6 +506,26 @@ public class Scrcpy extends Service {
                 attempts--;
                 if (attempts == 0) {
                     notifyConnectionError(e.getMessage());
+                    socketStatus = false;
+                    notifyConnectionStateChanged(false);
+                    return;
+                }
+                sleepBeforeRetry();
+            } catch (RuntimeException e) {
+                Log.e("scrcpy", "Connection loop runtime error", e);
+                String error = e.getClass().getSimpleName();
+                String detail = e.getMessage();
+                if (detail != null && !detail.isEmpty()) {
+                    error = error + ": " + detail;
+                }
+                if (attempts == 0) {
+                    notifyConnectionError(error);
+                    notifyConnectionStateChanged(false);
+                    break;
+                }
+                attempts--;
+                if (attempts == 0) {
+                    notifyConnectionError(error);
                     socketStatus = false;
                     notifyConnectionStateChanged(false);
                     return;
@@ -753,6 +789,7 @@ public class Scrcpy extends Service {
                             if (packetSize <= 0) {
                                 continue;
                             }
+                            validatePacketSize(packetSize, MAX_AUDIO_PACKET_SIZE, "audio");
 
                             byte[] packet = new byte[packetSize];
                             audioInputStream.readFully(packet);
@@ -780,6 +817,8 @@ public class Scrcpy extends Service {
                 Log.i("scrcpy", "Audio stream closed");
             } catch (IOException e) {
                 Log.w("scrcpy", "Audio receiver stopped: " + e.getMessage());
+            } catch (RuntimeException e) {
+                Log.e("scrcpy", "Audio receiver runtime error", e);
             } finally {
                 // Release one adb stream slot early (especially useful when remote audio is disabled).
                 closeQuietly(audioInputStream);
@@ -796,14 +835,20 @@ public class Scrcpy extends Service {
             minBufferSize = sampleRate / 10;
         }
 
-        AudioTrack track = new AudioTrack(
-                AudioManager.STREAM_MUSIC,
-                sampleRate,
-                channelConfig,
-                AUDIO_ENCODING,
-                minBufferSize * 2,
-                AudioTrack.MODE_STREAM
-        );
+        AudioTrack track;
+        try {
+            track = new AudioTrack(
+                    AudioManager.STREAM_MUSIC,
+                    sampleRate,
+                    channelConfig,
+                    AUDIO_ENCODING,
+                    minBufferSize * 2,
+                    AudioTrack.MODE_STREAM
+            );
+        } catch (RuntimeException e) {
+            Log.e("scrcpy", "Failed to create AudioTrack", e);
+            return null;
+        }
 
         if (track.getState() != AudioTrack.STATE_INITIALIZED) {
             track.release();
@@ -908,6 +953,7 @@ public class Scrcpy extends Service {
                 }
                 continue;
             }
+            validatePacketSize(packetSize, MAX_MJPEG_PACKET_SIZE, "mjpeg");
 
             byte[] packet = new byte[packetSize];
             videoInputStream.readFully(packet);
@@ -1001,11 +1047,21 @@ public class Scrcpy extends Service {
         return -1;
     }
 
-    private static byte[] mergeConfigPacket(byte[] configPacket, byte[] packet) {
-        byte[] merged = new byte[configPacket.length + packet.length];
+    private static byte[] mergeConfigPacket(byte[] configPacket, byte[] packet, int maxPacketSize) throws IOException {
+        long mergedSize = (long) configPacket.length + (long) packet.length;
+        if (mergedSize > maxPacketSize) {
+            throw new IOException("Merged video packet too large: " + mergedSize);
+        }
+        byte[] merged = new byte[(int) mergedSize];
         System.arraycopy(configPacket, 0, merged, 0, configPacket.length);
         System.arraycopy(packet, 0, merged, configPacket.length, packet.length);
         return merged;
+    }
+
+    private static void validatePacketSize(int packetSize, int maxPacketSize, String streamName) throws IOException {
+        if (packetSize > maxPacketSize) {
+            throw new IOException("Invalid " + streamName + " packet size: " + packetSize);
+        }
     }
 
     private void notifyVideoSizeChanged(int width, int height) {
@@ -1096,6 +1152,7 @@ public class Scrcpy extends Service {
                 if (packetSize <= 0) {
                     continue;
                 }
+                validatePacketSize(packetSize, MAX_AUDIO_PACKET_SIZE, "audio");
 
                 byte[] packet = new byte[packetSize];
                 audioInputStream.readFully(packet);

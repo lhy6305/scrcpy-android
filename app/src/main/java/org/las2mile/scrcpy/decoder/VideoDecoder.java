@@ -115,7 +115,7 @@ public class VideoDecoder {
                 mCodec.configure(format, surface, null, 0);
                 mCodec.start();
                 mIsConfigured.set(true);
-            } catch (IllegalStateException e) {
+            } catch (RuntimeException e) {
                 mIsConfigured.set(false);
                 releaseCodec();
             }
@@ -141,7 +141,7 @@ public class VideoDecoder {
                             mCodec.queueInputBuffer(index, 0, size, presentationTimeUs, flags);
                         }
                     }
-                } catch (IllegalStateException e) {
+                } catch (RuntimeException e) {
                     Log.w("scrcpy", "VideoDecoder input path failed, resetting codec", e);
                     mIsConfigured.set(false);
                     releaseCodec();
@@ -171,7 +171,7 @@ public class VideoDecoder {
                                 break;
                             }
                         }
-                    } catch (IllegalStateException e) {
+                    } catch (RuntimeException e) {
                         // Surface/codecs may be transiently invalid during orientation/insets changes.
                         Log.w("scrcpy", "VideoDecoder output path failed, resetting codec", e);
                         mIsConfigured.set(false);

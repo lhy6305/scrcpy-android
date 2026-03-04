@@ -2,7 +2,9 @@ package org.las2mile.scrcpy;
 
 import org.junit.Test;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -11,6 +13,7 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class ScrcpyProtocolEncodingTest {
 
@@ -74,6 +77,22 @@ public class ScrcpyProtocolEncodingTest {
         assertFalse(invokeShouldConfigureVideoDecoder(true, true, true, true, false));
     }
 
+    @Test
+    public void validatePacketSize_rejectsOversizedPayload() throws Exception {
+        try {
+            invokeValidatePacketSize(4097, 4096, "video");
+            fail("Expected IOException");
+        } catch (InvocationTargetException e) {
+            assertTrue(e.getCause() instanceof IOException);
+            assertTrue(e.getCause().getMessage().contains("video"));
+        }
+    }
+
+    @Test
+    public void validatePacketSize_acceptsBoundedPayload() throws Exception {
+        invokeValidatePacketSize(4096, 4096, "video");
+    }
+
     private static byte[] invokeGetClippedUtf8(String text, int maxBytes) throws Exception {
         Method method = Scrcpy.class.getDeclaredMethod("getClippedUtf8", String.class, int.class);
         method.setAccessible(true);
@@ -118,6 +137,12 @@ public class ScrcpyProtocolEncodingTest {
                 decoderHealthy,
                 hasCodecConfig,
                 hasSurface);
+    }
+
+    private static void invokeValidatePacketSize(int packetSize, int maxPacketSize, String streamName) throws Exception {
+        Method method = Scrcpy.class.getDeclaredMethod("validatePacketSize", int.class, int.class, String.class);
+        method.setAccessible(true);
+        method.invoke(null, packetSize, maxPacketSize, streamName);
     }
 
     private static int getPrivateStaticInt(String fieldName) throws Exception {
