@@ -6,6 +6,8 @@ import org.junit.Test;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -85,6 +87,23 @@ public class AdbTimeoutAndCommandSafetyTest {
     }
 
     @Test
+    public void adbUtilsBuildAppendBase64LineCommand_usesPrintfAndQuotedPayload() throws Exception {
+        String command = invokeAdbUtilsBuildAppendBase64LineCommand("abc+/=", "/data/local/tmp/serverBase64");
+        assertEquals("printf '%s\\n' 'abc+/=' >> '/data/local/tmp/serverBase64'", command);
+    }
+
+    @Test
+    public void adbUtilsBuildAppendBase64LineCommand_rejectsSingleQuote() throws Exception {
+        try {
+            invokeAdbUtilsBuildAppendBase64LineCommand("ab'cd", "/data/local/tmp/serverBase64");
+        } catch (InvocationTargetException e) {
+            assertTrue(e.getCause() instanceof IllegalArgumentException);
+            return;
+        }
+        throw new AssertionError("Expected IllegalArgumentException");
+    }
+
+    @Test
     public void proximityPowerToggle_disabledByDefault() throws Exception {
         Field field = PlayerActivity.class.getDeclaredField("ENABLE_PROXIMITY_POWER_TOGGLE");
         field.setAccessible(true);
@@ -101,5 +120,12 @@ public class AdbTimeoutAndCommandSafetyTest {
         Field field = clazz.getDeclaredField(fieldName);
         field.setAccessible(true);
         return field.getLong(null);
+    }
+
+    private static String invokeAdbUtilsBuildAppendBase64LineCommand(String chunk, String targetFile) throws Exception {
+        Class<?> clazz = Class.forName("org.las2mile.scrcpy.utils.AdbUtils");
+        Method method = clazz.getDeclaredMethod("buildAppendBase64LineCommand", String.class, String.class);
+        method.setAccessible(true);
+        return (String) method.invoke(null, chunk, targetFile);
     }
 }
