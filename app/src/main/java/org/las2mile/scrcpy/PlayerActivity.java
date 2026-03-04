@@ -51,7 +51,7 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.tananaev.adblib.AdbConnection;
+import com.android.adblib.AdbConnection;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -1422,7 +1422,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             if (current instanceof IOException) {
                 for (StackTraceElement frame : current.getStackTrace()) {
                     String className = frame.getClassName();
-                    if (className != null && className.startsWith("com.tananaev.adblib.")) {
+                    if (className != null && className.startsWith("com.android.adblib.")) {
                         return true;
                     }
                 }
@@ -2182,3 +2182,4 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         // no-op
     }
 }
+

@@ -2,8 +2,8 @@ package org.las2mile.scrcpy;
 
 import android.content.Context;
 
-import com.tananaev.adblib.AdbConnection;
-import com.tananaev.adblib.AdbStream;
+import com.android.adblib.AdbConnection;
+import com.android.adblib.AdbStream;
 
 import org.las2mile.scrcpy.utils.AdbUtils;
 
@@ -132,3 +132,4 @@ public final class ApkViewerAgentClient {
         }
     }
 }
+

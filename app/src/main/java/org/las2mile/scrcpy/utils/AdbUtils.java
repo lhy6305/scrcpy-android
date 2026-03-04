@@ -3,10 +3,10 @@ package org.las2mile.scrcpy.utils;
 import android.content.Context;
 import android.util.Base64;
 
-import com.tananaev.adblib.AdbBase64;
-import com.tananaev.adblib.AdbConnection;
-import com.tananaev.adblib.AdbCrypto;
-import com.tananaev.adblib.AdbStream;
+import com.android.adblib.AdbBase64;
+import com.android.adblib.AdbConnection;
+import com.android.adblib.AdbCrypto;
+import com.android.adblib.AdbStream;
 
 import java.io.Closeable;
 import java.io.EOFException;
@@ -373,3 +373,4 @@ public final class AdbUtils {
         }
     }
 }
+

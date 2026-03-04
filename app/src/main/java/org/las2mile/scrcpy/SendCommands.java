@@ -3,7 +3,7 @@ package org.las2mile.scrcpy;
 import android.content.Context;
 import android.util.Log;
 
-import com.tananaev.adblib.AdbConnection;
+import com.android.adblib.AdbConnection;
 
 import org.las2mile.scrcpy.utils.AdbUtils;
 
@@ -268,3 +268,4 @@ public class SendCommands {
         }
     }
 }
+

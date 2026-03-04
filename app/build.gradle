@@ -45,6 +45,5 @@ afterEvaluate {
 
 dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar'])
-    implementation 'com.tananaev:adblib:1.3'
     testImplementation 'junit:junit:4.13.2'
 }

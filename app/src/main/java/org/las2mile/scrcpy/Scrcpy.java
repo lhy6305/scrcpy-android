@@ -26,9 +26,9 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.Surface;
 
-import com.tananaev.adblib.AdbConnection;
-import com.tananaev.adblib.AdbCrypto;
-import com.tananaev.adblib.AdbStream;
+import com.android.adblib.AdbConnection;
+import com.android.adblib.AdbCrypto;
+import com.android.adblib.AdbStream;
 
 import org.las2mile.scrcpy.decoder.VideoDecoder;
 
@@ -1634,3 +1634,4 @@ public class Scrcpy extends Service {
         }
     }
 }
+
