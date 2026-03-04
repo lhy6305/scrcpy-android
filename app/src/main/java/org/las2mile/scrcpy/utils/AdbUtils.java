@@ -2,15 +2,14 @@ package org.las2mile.scrcpy.utils;
 
 import android.content.Context;
 import android.util.Base64;
-import android.util.Log;
 
 import com.tananaev.adblib.AdbBase64;
 import com.tananaev.adblib.AdbConnection;
 import com.tananaev.adblib.AdbCrypto;
 import com.tananaev.adblib.AdbStream;
 
-import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
+import java.io.EOFException;
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
@@ -24,7 +23,8 @@ import java.util.UUID;
 
 public final class AdbUtils {
 
-    private static final String TAG = "AdbUtils";
+    private static final int SYNC_DATA_MAX = 64 * 1024;
+    private static final int DEFAULT_REMOTE_FILE_MODE = 0644;
 
     private AdbUtils() {
         // no instances
@@ -223,50 +223,153 @@ public final class AdbUtils {
     }
 
     /**
-     * Pushes a file to the remote device efficiently without matching generic prompts.
+     * Pushes a file to the remote device through the ADB sync protocol.
      */
-    public static void pushFile(AdbConnection adb, byte[] fileBase64, String remotePath, long timeoutMs) throws IOException, InterruptedException {
-        AdbStream shell = null;
+    public static void pushFile(AdbConnection adb, byte[] fileBytes, String remotePath, long timeoutMs) throws IOException, InterruptedException {
+        if (adb == null) {
+            throw new IOException("adb is null");
+        }
+        if (fileBytes == null || fileBytes.length == 0) {
+            throw new IOException("fileBytes is empty");
+        }
+        String normalizedPath = remotePath == null ? "" : remotePath.trim();
+        if (normalizedPath.isEmpty()) {
+            throw new IOException("remotePath is empty");
+        }
+
+        AdbStream sync = null;
+        long deadlineMs = timeoutMs > 0 ? System.currentTimeMillis() + timeoutMs : Long.MAX_VALUE;
         try {
             synchronized (adb) {
-                shell = adb.open("shell:");
+                sync = adb.open("sync:");
             }
 
-                        // Remove existing file
-                        String marker1 = "DEL_" + UUID.randomUUID().toString().replace("-", "");
-                        shell.write(("rm -f " + remotePath + "\n").getBytes(StandardCharsets.UTF_8));
-                        shell.write(("echo " + marker1 + "\n").getBytes(StandardCharsets.UTF_8));
-                        if (!waitForMarker(shell, marker1, timeoutMs)) {
-                            throw new SocketTimeoutException("Timeout waiting for remote file deletion");
-                        }
-            
-                        String eofMarker = "EOF_" + UUID.randomUUID().toString().replace("-", "");
-                        String cmd = "cat << '" + eofMarker + "' | base64 -d > " + remotePath + "\n";
-                        shell.write(cmd.getBytes(StandardCharsets.UTF_8));
-            
-                        int len = fileBase64.length;
-                        int chunkSize = 4056;
-                        int offset = 0;
-            
-                                    // Chunked write
-                                    while (offset < len) {
-                                        checkCancelled();
-                                        int currentChunk = Math.min(chunkSize, len - offset);
-                                        byte[] chunk = new byte[currentChunk];
-                                        System.arraycopy(fileBase64, offset, chunk, 0, currentChunk);
-                                        shell.write(chunk);
-                                        offset += currentChunk;
-                                    }            
-                        // End the cat block
-                        shell.write(("\n" + eofMarker + "\n").getBytes(StandardCharsets.UTF_8));
-            
-                        // Wait for completion marker
-                        String marker2 = "DONE_" + UUID.randomUUID().toString().replace("-", "");
-                        shell.write(("echo " + marker2 + "\n").getBytes(StandardCharsets.UTF_8));            if (!waitForMarker(shell, marker2, timeoutMs)) {
-                throw new SocketTimeoutException("Timeout waiting for file push completion");
+            int maxAdbPayload = adb.getMaxData();
+            int maxSyncDataPerPacket = Math.min(SYNC_DATA_MAX, Math.max(1, maxAdbPayload - 8));
+
+            byte[] sendPath = (normalizedPath + "," + DEFAULT_REMOTE_FILE_MODE).getBytes(StandardCharsets.UTF_8);
+            if (8 + sendPath.length > maxAdbPayload) {
+                throw new IOException("remotePath is too long for adb stream max payload: " + normalizedPath);
             }
+            writeSyncRequest(sync, "SEND", sendPath);
+
+            int offset = 0;
+            while (offset < fileBytes.length) {
+                checkCancelled();
+                checkSyncTimeout(deadlineMs, "Timeout while sending sync DATA packet");
+
+                int chunkSize = Math.min(maxSyncDataPerPacket, fileBytes.length - offset);
+                byte[] chunk = new byte[chunkSize];
+                System.arraycopy(fileBytes, offset, chunk, 0, chunkSize);
+                writeSyncRequest(sync, "DATA", chunk);
+                offset += chunkSize;
+            }
+
+            checkSyncTimeout(deadlineMs, "Timeout while finalizing sync transfer");
+            int mtimeSeconds = (int) (System.currentTimeMillis() / 1000L);
+            writeSyncDone(sync, mtimeSeconds);
+
+            SyncStreamReader reader = new SyncStreamReader(sync);
+            byte[] header = reader.readFully(8);
+            String responseId = new String(header, 0, 4, StandardCharsets.US_ASCII);
+            int responseLength = decodeLittleEndianInt(header, 4);
+
+            if ("OKAY".equals(responseId)) {
+                if (responseLength > 0) {
+                    reader.readFully(responseLength);
+                }
+                return;
+            }
+
+            if ("FAIL".equals(responseId)) {
+                byte[] errorBytes = responseLength > 0 ? reader.readFully(responseLength) : new byte[0];
+                String errorMessage = new String(errorBytes, StandardCharsets.UTF_8);
+                throw new IOException("sync push failed for " + normalizedPath + ": " + errorMessage);
+            }
+
+            throw new IOException("Unexpected sync response: " + responseId + " (len=" + responseLength + ")");
         } finally {
-            closeQuietly(shell);
+            closeQuietly(sync);
+        }
+    }
+
+    private static void writeSyncRequest(AdbStream stream, String id, byte[] payload) throws IOException, InterruptedException {
+        byte[] idBytes = id.getBytes(StandardCharsets.US_ASCII);
+        byte[] body = payload == null ? new byte[0] : payload;
+        byte[] packet = new byte[8 + body.length];
+        if (idBytes.length != 4) {
+            throw new IOException("Invalid sync id: " + id);
+        }
+        System.arraycopy(idBytes, 0, packet, 0, 4);
+        encodeLittleEndianInt(packet, 4, body.length);
+        if (body.length > 0) {
+            System.arraycopy(body, 0, packet, 8, body.length);
+        }
+        stream.write(packet);
+    }
+
+    private static void writeSyncDone(AdbStream stream, int mtimeSeconds) throws IOException, InterruptedException {
+        byte[] done = new byte[8];
+        done[0] = 'D';
+        done[1] = 'O';
+        done[2] = 'N';
+        done[3] = 'E';
+        encodeLittleEndianInt(done, 4, mtimeSeconds);
+        stream.write(done);
+    }
+
+    private static void checkSyncTimeout(long deadlineMs, String message) throws SocketTimeoutException {
+        if (deadlineMs == Long.MAX_VALUE) {
+            return;
+        }
+        if (System.currentTimeMillis() > deadlineMs) {
+            throw new SocketTimeoutException(message);
+        }
+    }
+
+    private static void encodeLittleEndianInt(byte[] data, int offset, int value) {
+        data[offset] = (byte) (value & 0xFF);
+        data[offset + 1] = (byte) ((value >>> 8) & 0xFF);
+        data[offset + 2] = (byte) ((value >>> 16) & 0xFF);
+        data[offset + 3] = (byte) ((value >>> 24) & 0xFF);
+    }
+
+    private static int decodeLittleEndianInt(byte[] data, int offset) {
+        return (data[offset] & 0xFF)
+                | ((data[offset + 1] & 0xFF) << 8)
+                | ((data[offset + 2] & 0xFF) << 16)
+                | ((data[offset + 3] & 0xFF) << 24);
+    }
+
+    private static final class SyncStreamReader {
+        private final AdbStream stream;
+        private byte[] chunk = new byte[0];
+        private int offset;
+
+        private SyncStreamReader(AdbStream stream) {
+            this.stream = stream;
+        }
+
+        private byte[] readFully(int size) throws IOException, InterruptedException {
+            if (size < 0) {
+                throw new IOException("Negative sync read size: " + size);
+            }
+            byte[] out = new byte[size];
+            int outOffset = 0;
+            while (outOffset < size) {
+                if (offset >= chunk.length) {
+                    chunk = stream.read();
+                    offset = 0;
+                    if (chunk == null || chunk.length == 0) {
+                        throw new EOFException("Unexpected EOF while reading sync response");
+                    }
+                }
+                int toCopy = Math.min(size - outOffset, chunk.length - offset);
+                System.arraycopy(chunk, offset, out, outOffset, toCopy);
+                offset += toCopy;
+                outOffset += toCopy;
+            }
+            return out;
         }
     }
 }

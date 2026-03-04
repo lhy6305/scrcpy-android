@@ -97,7 +97,7 @@ public class SendCommands {
         return command.toString();
     }
 
-    public Result sendAdbCommands(Context context, final byte[] fileBase64, final String ip, int bitrate, int maxSize,
+    public Result sendAdbCommands(Context context, final byte[] fileBytes, final String ip, int bitrate, int maxSize,
             int width, int height, boolean useAmlogicMode, int scid, ProgressListener listener) {
         if (Thread.currentThread().isInterrupted()) {
             return Result.fail(Error.CANCELLED, "Cancelled");
@@ -106,7 +106,7 @@ public class SendCommands {
         final String command = buildServerCommand(bitrate, maxSize, width, height, useAmlogicMode, scid);
 
         try {
-            adbWriteAndStart(context, ip, fileBase64, command, listener);
+            adbWriteAndStart(context, ip, fileBytes, command, listener);
             return Result.ok();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -126,13 +126,13 @@ public class SendCommands {
         }
     }
 
-    public Result pushServerJar(Context context, final byte[] fileBase64, final String ip, ProgressListener listener) {
+    public Result pushServerJar(Context context, final byte[] fileBytes, final String ip, ProgressListener listener) {
         if (Thread.currentThread().isInterrupted()) {
             return Result.fail(Error.CANCELLED, "Cancelled");
         }
 
         try {
-            adbWriteAndStart(context, ip, fileBase64, null, listener);
+            adbWriteAndStart(context, ip, fileBytes, null, listener);
             return Result.ok();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -217,7 +217,7 @@ public class SendCommands {
         }
     }
 
-    private static void adbWriteAndStart(Context context, String ip, byte[] fileBase64, String command, ProgressListener listener)
+    private static void adbWriteAndStart(Context context, String ip, byte[] fileBytes, String command, ProgressListener listener)
             throws IOException, InterruptedException {
         checkCancelled();
         report(listener, Phase.CONNECTING_ADB);
@@ -231,9 +231,9 @@ public class SendCommands {
             // Kill existing server before pushing or starting
             AdbUtils.executeShellCommandWait(session.adb, "pkill -f com.genymobile.scrcpy.Server", PROMPT_TIMEOUT_MS);
 
-            if (fileBase64 != null && fileBase64.length > 0) {
+            if (fileBytes != null && fileBytes.length > 0) {
                 report(listener, Phase.PUSHING_JAR);
-                AdbUtils.pushFile(session.adb, fileBase64, REMOTE_SERVER_JAR_PATH, PROMPT_TIMEOUT_MS);
+                AdbUtils.pushFile(session.adb, fileBytes, REMOTE_SERVER_JAR_PATH, PROMPT_TIMEOUT_MS);
             }
 
             if (command != null && !command.trim().isEmpty()) {

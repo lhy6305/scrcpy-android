@@ -282,9 +282,9 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         showConnectingUi(R.string.status_connecting_adb, false);
 
         deployThread = new Thread(() -> {
-            byte[] fileBase64;
+            byte[] serverJarBytes;
             try {
-                fileBase64 = loadServerJarBase64();
+                serverJarBytes = loadServerJarBytes();
             } catch (IOException e) {
                 runOnUiThread(() -> showErrorUi(R.string.error_adb_io));
                 return;
@@ -292,13 +292,17 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
 
             SendCommands.Result result = sendCommands.pushServerJar(
                     PlayerActivity.this,
-                    fileBase64,
+                    serverJarBytes,
                     serverAdr,
                     phase -> runOnUiThread(() -> showConnectingUi(getStatusTextForPhase(phase), false))
             );
 
             runOnUiThread(() -> {
                 if (!result.success) {
+                    Log.e("scrcpy", "pushServerJar failed: error=" + result.error + ", message=" + result.message);
+                    if (!TextUtils.isEmpty(result.message)) {
+                        Toast.makeText(PlayerActivity.this, result.message, Toast.LENGTH_SHORT).show();
+                    }
                     showErrorUi(getErrorTextForSendCommands(result.error));
                     return;
                 }
@@ -333,7 +337,9 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
                 stopScrcpyServiceIfRunning();
             }
         };
-        mainHandler.postDelayed(streamTimeoutRunnable, 10_000L);
+        // Some STB/TV targets need longer warm-up before first frame arrives.
+        // A short timeout can kill the service while connection retries are still progressing.
+        mainHandler.postDelayed(streamTimeoutRunnable, 30_000L);
     }
 
     private void cancelStreamTimeout() {
@@ -1218,16 +1224,16 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             return;
         }
 
-        byte[] base64 = loadAssetBase64(ApkViewerAgentClient.ASSET_NAME);
+        byte[] agentJarBytes = loadAssetBytes(ApkViewerAgentClient.ASSET_NAME);
         AdbConnection adb = getAdbForTools();
         if (adb != null) {
             try {
-                ApkViewerAgentClient.deploy(adb, base64, null);
+                ApkViewerAgentClient.deploy(adb, agentJarBytes, null);
             } catch (IOException e) {
-                ApkViewerAgentClient.deploy(this, serverAdr, base64, null);
+                ApkViewerAgentClient.deploy(this, serverAdr, agentJarBytes, null);
             }
         } else {
-            ApkViewerAgentClient.deploy(this, serverAdr, base64, null);
+            ApkViewerAgentClient.deploy(this, serverAdr, agentJarBytes, null);
         }
 
         // Best-effort verify: some ROMs intermittently return empty shell output for tiny one-shot commands.
@@ -1474,7 +1480,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         return false;
     }
 
-    private byte[] loadAssetBase64(String assetName) throws IOException {
+    private byte[] loadAssetBytes(String assetName) throws IOException {
         AssetManager assetManager = getAssets();
         try (InputStream input = assetManager.open(assetName)) {
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -1487,7 +1493,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             if (raw.length == 0) {
                 throw new IOException("Failed to read asset: " + assetName);
             }
-            return Base64.encode(raw, Base64.NO_WRAP);
+            return raw;
         }
     }
 
@@ -2003,7 +2009,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
         return SCID_RANDOM.nextInt() & 0x7fffffff;
     }
 
-    private byte[] loadServerJarBase64() throws IOException {
+    private byte[] loadServerJarBytes() throws IOException {
         AssetManager assetManager = getAssets();
         try (InputStream input = assetManager.open("scrcpy-server.jar")) {
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -2016,7 +2022,7 @@ public class PlayerActivity extends Activity implements Scrcpy.ServiceCallbacks,
             if (raw.length == 0) {
                 throw new IOException("Failed to read scrcpy-server.jar from assets");
             }
-            return Base64.encode(raw, Base64.NO_WRAP);
+            return raw;
         }
     }
 

@@ -78,6 +78,8 @@ public class Scrcpy extends Service {
     private static final int ADB_PORT = 5555;
     private static final int ADB_CONNECT_TIMEOUT_MS = 5_000;
     private static final int ADB_SOCKET_TIMEOUT_MS = 5_000;
+    private static final int STREAM_OPEN_MAX_RETRIES = 120;
+    private static final long STREAM_OPEN_RETRY_DELAY_MS = 120L;
 
     private static final int VIDEO_CODEC_H264 = 0x68_32_36_34;
     private static final int VIDEO_CODEC_H265 = 0x68_32_36_35;
@@ -350,7 +352,6 @@ public class Scrcpy extends Service {
         int attempts = 50;
         while (attempts != 0 && letServiceRunning.get()) {
             AdbConnection adbConnection = null;
-            AdbStream serverStream = null;
             AdbStream videoStream = null;
             AdbStream audioStream = null;
             AdbStream controlStream = null;
@@ -373,47 +374,14 @@ public class Scrcpy extends Service {
                 String serverCommand = SendCommands.buildServerCommand(videoBitrate, maxSize, screenWidth, screenHeight, useAmlogicMode, scid);
                 org.las2mile.scrcpy.utils.AdbUtils.executeDetachedShellCommand(adbConnection, serverCommand);
 
-                IOException openVideoError = null;
-                for (int i = 0; i < 40 && letServiceRunning.get(); i++) {
-                    AdbStream candidateVideoStream = null;
-                    DataInputStream candidateVideoInputStream = null;
-                    try {
-                        candidateVideoStream = openAdbStreamSerialized(adbConnection, socketService);
-                        candidateVideoInputStream = new DataInputStream(new AdbStreamInputStream(candidateVideoStream));
-
-                        int dummyByte = candidateVideoInputStream.read();
-                        if (dummyByte == -1) {
-                            throw new EOFException("Could not read dummy byte from video stream");
-                        }
-
-                        videoStream = candidateVideoStream;
-                        videoInputStream = candidateVideoInputStream;
-                        openVideoError = null;
-                        break;
-                    } catch (IOException e) {
-                        openVideoError = e;
-                        closeQuietly(candidateVideoInputStream);
-                        closeQuietly(candidateVideoStream);
-                        if (i < 39 && letServiceRunning.get()) {
-                            Thread.sleep(75);
-                        }
-                    }
-                }
-                if (videoInputStream == null) {
-                    if (openVideoError != null) {
-                        throw openVideoError;
-                    }
-                    throw new IOException("Failed to open scrcpy video stream");
-                }
-
-                audioStream = openAdbStreamSerialized(adbConnection, socketService);
-                audioInputStream = new DataInputStream(new AdbStreamInputStream(audioStream));
-
-                controlStream = openAdbStreamSerialized(adbConnection, socketService);
-                controlInputStream = new DataInputStream(new AdbStreamInputStream(controlStream));
-                controlOutputStream = new DataOutputStream(new AdbStreamOutputStream(controlStream));
-
-                readDeviceMeta(videoInputStream);
+                StreamOpenResult streams = openStreamsWithRetry(adbConnection, socketService);
+                videoStream = streams.videoStream;
+                audioStream = streams.audioStream;
+                controlStream = streams.controlStream;
+                videoInputStream = streams.videoInputStream;
+                audioInputStream = streams.audioInputStream;
+                controlInputStream = streams.controlInputStream;
+                controlOutputStream = streams.controlOutputStream;
 
                 controlSender = startControlSender(controlOutputStream);
                 controlReceiver = startControlReceiver(controlInputStream);
@@ -548,7 +516,6 @@ public class Scrcpy extends Service {
                 closeQuietly(controlStream);
                 closeQuietly(audioStream);
                 closeQuietly(videoStream);
-                closeQuietly(serverStream);
                 closeQuietly(adbConnection);
                 joinThread(controlSender);
                 joinThread(controlReceiver);
@@ -609,6 +576,85 @@ public class Scrcpy extends Service {
             return SOCKET_NAME_PREFIX;
         }
         return SOCKET_NAME_PREFIX + String.format("_%08x", scid);
+    }
+
+    private StreamOpenResult openStreamsWithRetry(AdbConnection adbConnection, String socketService)
+            throws IOException, InterruptedException {
+        IOException lastError = null;
+        for (int i = 0; i < STREAM_OPEN_MAX_RETRIES && letServiceRunning.get(); i++) {
+            AdbStream candidateVideoStream = null;
+            AdbStream candidateAudioStream = null;
+            AdbStream candidateControlStream = null;
+            DataInputStream candidateVideoInputStream = null;
+            DataInputStream candidateAudioInputStream = null;
+            DataInputStream candidateControlInputStream = null;
+            DataOutputStream candidateControlOutputStream = null;
+            try {
+                candidateVideoStream = openAdbStreamSerialized(adbConnection, socketService);
+                candidateVideoInputStream = new DataInputStream(new AdbStreamInputStream(candidateVideoStream));
+                int dummyByte = candidateVideoInputStream.read();
+                if (dummyByte == -1) {
+                    throw new EOFException("Could not read dummy byte from video stream");
+                }
+
+                candidateAudioStream = openAdbStreamSerialized(adbConnection, socketService);
+                candidateAudioInputStream = new DataInputStream(new AdbStreamInputStream(candidateAudioStream));
+
+                candidateControlStream = openAdbStreamSerialized(adbConnection, socketService);
+                candidateControlInputStream = new DataInputStream(new AdbStreamInputStream(candidateControlStream));
+                candidateControlOutputStream = new DataOutputStream(new AdbStreamOutputStream(candidateControlStream));
+
+                readDeviceMeta(candidateVideoInputStream);
+                return new StreamOpenResult(
+                        candidateVideoStream,
+                        candidateAudioStream,
+                        candidateControlStream,
+                        candidateVideoInputStream,
+                        candidateAudioInputStream,
+                        candidateControlInputStream,
+                        candidateControlOutputStream
+                );
+            } catch (IOException e) {
+                lastError = e;
+                closeQuietly(candidateControlOutputStream);
+                closeQuietly(candidateControlInputStream);
+                closeQuietly(candidateAudioInputStream);
+                closeQuietly(candidateVideoInputStream);
+                closeQuietly(candidateControlStream);
+                closeQuietly(candidateAudioStream);
+                closeQuietly(candidateVideoStream);
+                if (i < STREAM_OPEN_MAX_RETRIES - 1 && letServiceRunning.get()) {
+                    Thread.sleep(STREAM_OPEN_RETRY_DELAY_MS);
+                }
+            }
+        }
+
+        if (lastError != null) {
+            throw lastError;
+        }
+        throw new IOException("Failed to open scrcpy streams");
+    }
+
+    private static final class StreamOpenResult {
+        private final AdbStream videoStream;
+        private final AdbStream audioStream;
+        private final AdbStream controlStream;
+        private final DataInputStream videoInputStream;
+        private final DataInputStream audioInputStream;
+        private final DataInputStream controlInputStream;
+        private final DataOutputStream controlOutputStream;
+
+        private StreamOpenResult(AdbStream videoStream, AdbStream audioStream, AdbStream controlStream,
+                DataInputStream videoInputStream, DataInputStream audioInputStream, DataInputStream controlInputStream,
+                DataOutputStream controlOutputStream) {
+            this.videoStream = videoStream;
+            this.audioStream = audioStream;
+            this.controlStream = controlStream;
+            this.videoInputStream = videoInputStream;
+            this.audioInputStream = audioInputStream;
+            this.controlInputStream = controlInputStream;
+            this.controlOutputStream = controlOutputStream;
+        }
     }
 
     private static void sleepBeforeRetry() {

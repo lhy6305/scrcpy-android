@@ -36,10 +36,10 @@ public final class ApkViewerAgentClient {
         void onMessage(String message);
     }
 
-    public static void deploy(Context context, String ip, byte[] agentJarBase64, ProgressListener listener)
+    public static void deploy(Context context, String ip, byte[] agentJarBytes, ProgressListener listener)
             throws IOException, InterruptedException {
-        if (agentJarBase64 == null || agentJarBase64.length == 0) {
-            throw new IOException("agentJarBase64 is empty");
+        if (agentJarBytes == null || agentJarBytes.length == 0) {
+            throw new IOException("agentJarBytes is empty");
         }
 
         AdbUtils.AdbSession session = null;
@@ -48,7 +48,7 @@ public final class ApkViewerAgentClient {
             session = AdbUtils.connect(context, ip, ADB_PORT, CONNECT_TIMEOUT_MS, SOCKET_TIMEOUT_MS);
             
             report(listener, "Pushing agent...");
-            AdbUtils.pushFile(session.adb, agentJarBase64, REMOTE_JAR_PATH, PROMPT_TIMEOUT_MS);
+            AdbUtils.pushFile(session.adb, agentJarBytes, REMOTE_JAR_PATH, PROMPT_TIMEOUT_MS);
             
             report(listener, "Agent deployed");
         } finally {
@@ -56,17 +56,17 @@ public final class ApkViewerAgentClient {
         }
     }
 
-    public static void deploy(AdbConnection adb, byte[] agentJarBase64, ProgressListener listener)
+    public static void deploy(AdbConnection adb, byte[] agentJarBytes, ProgressListener listener)
             throws IOException, InterruptedException {
         if (adb == null) {
             throw new IOException("adb is null");
         }
-        if (agentJarBase64 == null || agentJarBase64.length == 0) {
-            throw new IOException("agentJarBase64 is empty");
+        if (agentJarBytes == null || agentJarBytes.length == 0) {
+            throw new IOException("agentJarBytes is empty");
         }
 
         report(listener, "Pushing agent...");
-        AdbUtils.pushFile(adb, agentJarBase64, REMOTE_JAR_PATH, PROMPT_TIMEOUT_MS);
+        AdbUtils.pushFile(adb, agentJarBytes, REMOTE_JAR_PATH, PROMPT_TIMEOUT_MS);
         report(listener, "Agent deployed");
     }
 
